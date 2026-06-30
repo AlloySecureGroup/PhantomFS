@@ -258,9 +258,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-> **Trademark Notice:** PhantomFS™ is a trademark of Alloy Secure. The MIT license grants rights to the
-> software source code only — it does not grant any right to use the PhantomFS name, logo, or
-> branding in a manner that implies endorsement or competes with the original product.
+
+> **Trademark Notice:** PhantomFS™ is a trademark of Alloy Secure. All rights reserved.
+
 
 ---
 
@@ -278,8 +278,8 @@ The authors and contributors of PhantomFS:
 
 **Use at your own risk.** By using PhantomFS you acknowledge that you have read this disclaimer, understand it, and agree to be bound by its terms.
 
-> **Trademark Notice:** PhantomFS™ is a trademark of Alloy Secure. All rights reserved.
 
+> **Trademark Notice:** PhantomFS™ is a trademark of Alloy Secure. All rights reserved.
 
 
 ---
