@@ -16,11 +16,6 @@
 
 ---
 
-> **Trademark Notice:** PhantomFS™ is a trademark of Alloy Secure. All rights reserved.
-
-
----
-
 ## What Is PhantomFS?
 
 PhantomFS uses the **Windows Projected File System (ProjFS)** to surface a virtual directory full of convincing decoy files — financial reports, SSH keys, API credentials, HR spreadsheets, NDAs — that exist only in memory. No data is ever written to disk until an attacker (or insider threat) opens one.
@@ -282,6 +277,10 @@ The authors and contributors of PhantomFS:
 - Are **not responsible** for any data loss, system damage, legal liability, or harm to third parties resulting from deployment of PhantomFS in any environment
 
 **Use at your own risk.** By using PhantomFS you acknowledge that you have read this disclaimer, understand it, and agree to be bound by its terms.
+
+> **Trademark Notice:** PhantomFS™ is a trademark of Alloy Secure. All rights reserved.
+
+
 
 ---
 
