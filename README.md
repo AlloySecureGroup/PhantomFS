@@ -11,7 +11,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License"/></a>
   <a href="https://docs.microsoft.com/en-us/windows/win32/projfs/projected-file-system"><img src="https://img.shields.io/badge/Platform-Windows%2010%2B-blue" alt="Platform"/></a>
   <a href="https://dotnet.microsoft.com/download/dotnet-framework"><img src="https://img.shields.io/badge/.NET%20Framework-4.8-purple" alt=".NET 4.8"/></a>
-  <a href="https://github.com/sponsors/alloysecure"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink" alt="Sponsor"/></a>
+  <a href="https://github.com/sponsors/secdev02"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-pink" alt="Sponsor"/></a>
 </p>
 
 ---
@@ -225,7 +225,7 @@ iscc.exe installer\PhantomFS.iss
 
 PhantomFS is free, open-source, and MIT-licensed. If it has saved you time — or caught a real attacker — please consider sponsoring continued development.
 
-**[❤ Sponsor on GitHub](https://github.com/sponsors/alloysecure)**
+**[❤ Sponsor on GitHub](https://github.com/sponsors/secdev02)**
 
 Sponsors receive:
 
