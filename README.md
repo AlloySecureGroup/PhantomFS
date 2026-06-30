@@ -56,29 +56,14 @@ Because legitimate users have no reason to open files they didn't put there, eve
 
 ## Quick Start
 
-### Option A — Installer (recommended)
+###  Simple Commands (recommended)
 
 1. Download `PhantomFSSetup-1.0.0.exe` from [Releases](https://github.com/AlloySecureGroup/PhantomFS/releases)
-2. Run as Administrator — the installer enables ProjFS, registers the EventLog source, and creates `C:\PhantomFS\Virtual`
-3. Launch **PhantomFS** from the Start menu (or the optional scheduled task will start it at logon)
+2. Run as Administrator — enable ProjFS, `Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
+3. Execute `.\PhantomFS.exe --virtroot C:\PhantomFS\Virtual\Documents --syntheticonly`
 4. Browse to `C:\PhantomFS\Virtual\Documents` in Explorer — you will see the decoy files
 5. Open one — watch the Toast fire and check **Event Viewer → Windows Logs → Application**
 
-### Option B — Manual / Development
-
-```powershell
-# 1. Enable ProjFS (one-time, requires reboot)
-Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
-
-# 2. Register EventLog source (one-time, requires elevation)
-New-EventLog -LogName Application -Source PhantomFS
-
-# 3. Create the virtual root directory
-New-Item -ItemType Directory -Path C:\PhantomFS\Virtual -Force
-
-# 4. Run (must be Administrator)
-.\PhantomFS.exe C:\PhantomFS\Virtual
-```
 
 ---
 
