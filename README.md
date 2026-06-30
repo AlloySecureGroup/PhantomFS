@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/phantomfs-logo.png" alt="PhantomFS — Fake Files. Real Security." width="420" />
+  <img src="assets/sticker_logo.png" alt="PhantomFS — Fake Files. Real Security." width="420" />
 </p>
 
 <p align="center">
