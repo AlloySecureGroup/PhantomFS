@@ -46,7 +46,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 | **Per-file cooldown** | Configurable throttle (default 15 s) prevents alert floods when a tool reads multiple chunks |
 | **Synthetic file list** | Drop-in XML list of convincing filenames with realistic byte sizes |
 | **Single executable** | `PhantomFS.exe` + `PhantomFS.exe.config` — no installer required for basic use |
-| **Inno Setup installer** | Registers EventLog source, enables ProjFS feature, optional scheduled task at logon |
+| ** OPTIONAL - Inno Setup installer** | Registers EventLog source, enables ProjFS feature, optional scheduled task at logon |
 
 ---
 
@@ -63,7 +63,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 
 ### Option A — Installer (recommended)
 
-1. Download `PhantomFSSetup-1.0.0.exe` from [Releases](https://github.com/alloysecure/PhantomFS/releases)
+1. Download `PhantomFSSetup-1.0.0.exe` from [Releases](https://github.com/AlloySecureGroup/PhantomFS/releases)
 2. Run as Administrator — the installer enables ProjFS, registers the EventLog source, and creates `C:\PhantomFS\Virtual`
 3. Launch **PhantomFS** from the Start menu (or the optional scheduled task will start it at logon)
 4. Browse to `C:\PhantomFS\Virtual\Documents` in Explorer — you will see the decoy files
