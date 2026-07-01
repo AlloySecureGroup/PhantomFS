@@ -40,8 +40,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 | **Configurable templates** | PDF, XLSX, DOCX, JSON, CSV, PEM, plain text — all served from XML templates in the config |
 | **Per-file cooldown** | Configurable throttle (default 15 s) prevents alert floods when a tool reads multiple chunks |
 | **Synthetic file list** | Drop-in XML list of convincing filenames with realistic byte sizes |
-| **Single executable** | `PhantomFS.exe` + `PhantomFS.exe.config` — no installer required for basic use |
-| ** OPTIONAL - Inno Setup installer** | Registers EventLog source, enables ProjFS feature, optional scheduled task at logon |
+| **Single executable** | `PhantomFS.exe` + `PhantomFS.exe.config` — no installer required |
 
 ---
 
@@ -49,7 +48,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 
 - Windows 10 version 1809 (Build 17763) or later — Windows 11 recommended
 - .NET Framework 4.8
-- **Windows Projected File System** optional feature enabled (installer handles this automatically)
+- **Windows Projected File System** optional feature enabled (`Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`)
 - Administrator privileges to start the virtual root
 
 ---
@@ -58,7 +57,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 
 ###  Simple Commands (recommended)
 
-1. Download `PhantomFSSetup-1.0.0.exe` from [Releases](https://github.com/AlloySecureGroup/PhantomFS/releases)
+1. Download `PhantomFS-v1.0.0-x64.zip` from [Releases](https://github.com/AlloySecureGroup/PhantomFS/releases) and extract it
 2. Run as Administrator — enable ProjFS, `Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
 3. Execute `.\PhantomFS.exe --virtroot C:\PhantomFS\Virtual\Documents --syntheticonly`
 4. Browse to `C:\PhantomFS\Virtual\Documents` in Explorer — you will see the decoy files
@@ -171,13 +170,6 @@ csc.exe /platform:x64 /r:System.Xml.dll /out:PhantomFS.exe src\PhantomFS.cs
 `csc.exe` is typically at:
 ```
 C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-```
-
-## Optional - Build an installer
-To build the Inno Setup installer (requires [Inno Setup 6](https://jrsoftware.org/isdl.php)):
-
-```powershell
-iscc.exe installer\PhantomFS.iss
 ```
 
 ---
