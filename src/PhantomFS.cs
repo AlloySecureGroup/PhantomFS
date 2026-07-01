@@ -925,9 +925,30 @@ internal sealed class PhantomFSProvider
     {
         _current = this;
 
-        // Remove stale ProjFS state to prevent HR_NOT_A_REPARSE_POINT.
+        // Safety check: require explicit confirmation before discarding any existing
+        // content. This prevents accidental data loss if --virtroot is mistakenly
+        // pointed at a real directory that happens to share the intended path.
         if (Directory.Exists(_virtRoot))
         {
+            string[] existing = Directory.GetFileSystemEntries(_virtRoot);
+            if (existing.Length > 0)
+            {
+                Console.WriteLine();
+                Console.WriteLine("  [SAFETY] VirtRoot is not empty \u2014 "
+                                + existing.Length + " item(s) detected:");
+                Console.WriteLine("  " + _virtRoot);
+                Console.WriteLine();
+                Console.Write("  Permanently delete all contents and continue? [y/N] ");
+                string answer = Console.ReadLine();
+                if (answer == null ||
+                    !answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.Error.WriteLine("[ABORT] Clear the directory manually and re-run.");
+                    return Prj.E_FAIL;
+                }
+            }
+
+            // Remove stale ProjFS state to prevent HR_NOT_A_REPARSE_POINT.
             Console.WriteLine("  Clearing stale virtroot: " + _virtRoot);
             try { Directory.Delete(_virtRoot, true); }
             catch (Exception ex) { Console.Error.WriteLine("[WARN] " + ex.Message); }
