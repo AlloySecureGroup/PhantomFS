@@ -25,8 +25,25 @@ The moment a file is touched, PhantomFS:
 - Writes a **Windows Event Log** entry (Application log, source `PhantomFS`)
 - Fires a **Toast notification** to the active desktop session
 - Logs the exact filename, timestamp, and process context
+- When accessed over a network share — captures the **SMB username and source address**
 
 Because legitimate users have no reason to open files they didn't put there, every alert is high-confidence. No tuning, no ML, no cloud dependencies — just a native Windows driver and a single executable.
+
+---
+
+## What's New in v1.1.0
+
+### Auto-cleanup of materialized files
+
+When an attacker opens a synthetic file, ProjFS writes its content to disk (hydrates the placeholder). Left indefinitely, these hydrated files accumulate and could reveal to an attacker that they triggered a response. v1.1.0 adds a background cleanup timer that deletes materialized synthetic placeholders after a configurable delay (default: 5 minutes), reverting them to virtual files. The next access re-hydrates them on demand — nothing is permanently lost.
+
+### Remote session logging
+
+When a honeypot file is accessed over an SMB share, the Windows kernel SMB driver (srv2.sys) is the triggering process — ProjFS reports it as PID 4 (the System process). v1.1.0 detects this and calls `NetSessionEnum` to identify the **domain username** and **source machine** of the connecting client. A DNS lookup resolves the machine name to an IP address (configurable). The username, hostname, and IP all appear in the Event Log entry and Toast notification.
+
+### Backwards compatibility
+
+All v1.1.0 config keys are optional. A v1.0.0 `PhantomFS.exe.config` will continue to work without modification — omitted keys fall back to the documented defaults.
 
 ---
 
@@ -37,6 +54,8 @@ Because legitimate users have no reason to open files they didn't put there, eve
 | **Zero-footprint decoys** | Files are projected on demand — nothing is written to disk unless an attacker reads a file |
 | **Windows Event Log** | Event ID 1001 (file read), 1002 (placeholder created), 1003 (started), 1004 (stopped) |
 | **Toast alerts** | Immediate desktop notification via Windows PowerShell — works even over RDP |
+| **Remote session logging** | SMB username and source address captured via `NetSessionEnum` when PID 4 triggers access |
+| **Auto-cleanup** | Hydrated synthetic files deleted after a configurable delay; reverts to virtual on next access |
 | **Configurable templates** | PDF, XLSX, DOCX, JSON, CSV, PEM, plain text — all served from XML templates in the config |
 | **Per-file cooldown** | Configurable throttle (default 15 s) prevents alert floods when a tool reads multiple chunks |
 | **Synthetic file list** | Drop-in XML list of convincing filenames with realistic byte sizes |
@@ -57,7 +76,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 
 ###  Simple Commands (recommended)
 
-1. Download `PhantomFS-v1.0.0-x64.zip` from [Releases](https://github.com/AlloySecureGroup/PhantomFS/releases) and extract it
+1. Download `PhantomFS-v1.1.0-x64.zip` from [Releases](https://github.com/AlloySecureGroup/PhantomFS/releases) and extract it
 2. Run as Administrator — enable ProjFS, `Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart`
 3. Execute `.\PhantomFS.exe --virtroot C:\PhantomFS\Virtual\Documents --syntheticonly`
 4. Browse to `C:\PhantomFS\Virtual\Documents` in Explorer — you will see the decoy files
@@ -68,64 +87,88 @@ Because legitimate users have no reason to open files they didn't put there, eve
 
 ## Configuration
 
-All settings live in `PhantomFS.exe.config`.
+All settings live in `PhantomFS.exe.config`. **All keys are optional** — omitting a key uses the default shown in the table.
 
 ### `<settings>` Section
 
 ```xml
 <settings>
-  <add key="enableEventLog"       value="true"  />
-  <add key="enableToast"          value="true"  />
-  <add key="alertOnOpen"          value="true"  />
-  <add key="alertOnRead"          value="true"  />
-  <add key="toastCooldownSeconds" value="15"    />
-  <add key="verbose"              value="false" />
-  <add key="virtRoot"             value=""      />
-  <add key="sourceRoot"           value=""      />
-  <add key="syntheticOnly"        value="true"  />
+  <enableEventLog>true</enableEventLog>
+  <enableToast>true</enableToast>
+  <alertOnOpen>true</alertOnOpen>
+  <alertOnRead>true</alertOnRead>
+  <toastCooldownSeconds>15</toastCooldownSeconds>
+  <verbose>false</verbose>
+  <virtRoot></virtRoot>
+  <sourceRoot></sourceRoot>
+  <syntheticOnly>true</syntheticOnly>
+
+  <!-- v1.1.0 — auto-cleanup -->
+  <autoCleanupEnabled>true</autoCleanupEnabled>
+  <autoCleanupDelaySeconds>300</autoCleanupDelaySeconds>
+
+  <!-- v1.1.0 — remote session logging -->
+  <resolveRemoteIPs>true</resolveRemoteIPs>
 </settings>
 ```
 
-| Key | Default | Description |
-|---|---|---|
-| `enableEventLog` | `true` | Write to Windows Application event log |
-| `enableToast` | `true` | Send desktop Toast notification |
-| `alertOnOpen` | `true` | Alert when a placeholder is first created (directory browse) |
-| `alertOnRead` | `true` | Alert when file data is actually read |
-| `toastCooldownSeconds` | `15` | Minimum seconds between Toasts for the same file path |
-| `verbose` | `false` | Extra console output for diagnostics |
-| `virtRoot` | _(arg 1)_ | Override virtual root path from config rather than command line |
-| `sourceRoot` | _(empty)_ | Optional real backing directory — leave empty for synthetic-only mode |
-| `syntheticOnly` | `true` | Serve only the files listed in `<syntheticFileList>` |
+| Key | Default | Since | Description |
+|---|---|---|---|
+| `enableEventLog` | `true` | 1.0.0 | Write to Windows Application event log |
+| `enableToast` | `true` | 1.0.0 | Send desktop Toast notification |
+| `alertOnOpen` | `true` | 1.0.0 | Alert when a placeholder is first created (directory browse) |
+| `alertOnRead` | `true` | 1.0.0 | Alert when file data is actually read |
+| `toastCooldownSeconds` | `15` | 1.0.0 | Minimum seconds between Toasts for the same file path |
+| `verbose` | `false` | 1.0.0 | Extra console output for diagnostics |
+| `virtRoot` | _(arg 1)_ | 1.0.0 | Override virtual root path from config rather than command line |
+| `sourceRoot` | _(empty)_ | 1.0.0 | Optional real backing directory — leave empty for synthetic-only mode |
+| `syntheticOnly` | `true` | 1.0.0 | Serve only the files listed in `<syntheticFileList>` |
+| `autoCleanupEnabled` | `true` | **1.1.0** | Delete materialized synthetic files after the delay and revert to virtual |
+| `autoCleanupDelaySeconds` | `300` | **1.1.0** | Seconds after hydration before the file is deleted (cleanup timer runs every 30 s) |
+| `resolveRemoteIPs` | `true` | **1.1.0** | DNS-resolve the SMB client hostname to an IP address; set to `false` if lookup latency is unacceptable |
+
+### Remote Session Logging
+
+When a file is accessed over an SMB share, PhantomFS detects PID 4 (the Windows System process / kernel SMB driver) as the caller and automatically calls `NetSessionEnum` to identify the remote user. The Event Log entry and Toast notification will include:
+
+```
+PhantomFS — Honeypot File Content Read
+File    : Documents\Q4_Financial_Report_2024.pdf
+Process : System (PID 4)
+Remote  : CORP\jsmith @ DESKTOP-A1B2C3D  [192.168.1.45]
+```
+
+**Requirements for remote logging:**
+- The Server service must be running (it starts automatically whenever a share is active)
+- PhantomFS must be running on the machine hosting the share
+- `resolveRemoteIPs` requires the client machine to be resolvable via DNS
+
+### Auto-Cleanup Behaviour
+
+After a synthetic file is opened and hydrated (content written to disk), a background timer checks every 30 seconds and deletes files whose hydration time exceeds `autoCleanupDelaySeconds`. The deleted file reverts to a virtual ProjFS placeholder — the next access re-triggers the ProjFS callback as if the file had never been opened.
+
+Files that are still open when the cleanup timer fires are skipped without error and retried on the next 30-second cycle.
 
 ### Adding Decoy Files
 
 Add entries under `<syntheticFileList>` in the config:
 
-```xml
-<syntheticFileList>
-  <folder name="\Documents">
-    <file name="Q4_Financial_Report_2024.pdf"    size="8192"  template="pdf"  />
-    <file name="Employee_Salaries_2024.xlsx"     size="4096"  template="xlsx" />
-    <file name="Board_Meeting_Notes.docx"        size="6144"  template="docx" />
-  </folder>
-  <folder name="\IT\Keys">
-    <file name="deploy_key.pem"                  size="3247"  template="pem"  />
-    <file name="github_pat.txt"                  size="93"    template="github_pat" />
-  </folder>
-</syntheticFileList>
+```
+\Documents,true,0,1744586986
+\Documents\Q4_Financial_Report_2024.pdf,false,8192,1744586986
+\Documents\Employee_Salaries_2024.xlsx,false,4096,1743942586
+\IT\Keys,true,0,1744586986
+\IT\Keys\deploy_key.pem,false,3247,1742354986
 ```
 
 ### Adding Content Templates
 
 ```xml
-<fileContentTemplates>
-  <template name="my_custom">
-    <![CDATA[
-      ... your file content here ...
-    ]]>
-  </template>
-</fileContentTemplates>
+<syntheticTemplates>
+  <template name="my_custom_file.txt"><![CDATA[
+    ... your file content here ...
+  ]]></template>
+</syntheticTemplates>
 ```
 
 ---
@@ -136,9 +179,9 @@ Open **Event Viewer → Windows Logs → Application** and filter by source `Pha
 
 | Event ID | Level | Meaning |
 |---|---|---|
-| 1001 | Warning | A decoy file's data was read |
+| 1001 | Warning | A decoy file's data was read (includes remote user/IP when applicable) |
 | 1002 | Warning | A decoy file placeholder was created (file was browsed/stat'd) |
-| 1003 | Information | PhantomFS started — virtual root path logged |
+| 1003 | Information | PhantomFS started — virtual root path and settings logged |
 | 1004 | Information | PhantomFS stopped cleanly |
 
 ---
@@ -152,11 +195,11 @@ PhantomFS ships a workflow at `.github/workflows/build.yml` that compiles for **
 The workflow runs manually from the Actions tab. Set the **version** input and tick **Publish a GitHub Release** to cut a release in one step:
 
 ```powershell
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
-Release assets will be named `PhantomFS-v1.0.0-x64.zip` .
+Release assets will be named `PhantomFS-v1.1.0-x64.zip`.
 
 ---
 
@@ -176,9 +219,10 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 
 ## Deployment Ideas
 
-- **Workstation trap** — run as a scheduled task at logon; any lateral movement to `\\hostname\PhantomFS\Virtual` fires an immediate alert
-- **File server canary** — place a `\Finance` share pointing at the virtual root alongside the real finance share
+- **Workstation trap** — run as a scheduled task at logon; any lateral movement to `\\hostname\PhantomFS\Virtual` fires an immediate alert with the attacker's username and source IP
+- **File server canary** — place a `\Finance` share pointing at the virtual root alongside the real finance share; remote session logging identifies exactly which account browsed the bait
 - **Developer machine** — surface fake AWS keys and SSH keys in `~\Documents`; insider or supply-chain attacks trigger alerts before exfiltration
+- **Air-gapped segment** — set `resolveRemoteIPs=false` to skip DNS in environments where external lookups are blocked; the NetBIOS machine name is still captured
 
 ---
 
@@ -266,4 +310,3 @@ The authors and contributors of PhantomFS:
 Built on the [Windows Projected File System API](https://docs.microsoft.com/en-us/windows/win32/projfs/projected-file-system) — the same technology that powers WSL2 and OneDrive Files On-Demand.
 
 Inspired by my work as a researcher at Thinkst 💚 `https://citation.thinkst.com/talk/94782`
-

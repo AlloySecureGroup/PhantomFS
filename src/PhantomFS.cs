@@ -26,7 +26,7 @@
 // IN THE SOFTWARE.
 //
 // Trademark Notice: PhantomFS(TM) is a trademark of Alloy Secure. The MIT license
-// grants rights to this source code only \u2014 it does not grant the right to use
+// grants rights to this source code only — it does not grant the right to use
 // the PhantomFS name, logo, or branding in a manner that implies endorsement
 // or competes with the original product.
 //
@@ -41,11 +41,11 @@
 //   Run once in an elevated PowerShell to enable the optional feature:
 //     Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
 //
-// ── COMPILE ──────────────────────────────────────────────────────────────────
+// ── COMPILE ──────────────────────────────────────────────────────────────
 //   csc.exe /platform:x64 /r:System.Xml.dll /out:PhantomFS.exe PhantomFS.cs
 //   (csc.exe lives at C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe)
 //
-// ── RUN (Administrator required) ─────────────────────────────────────────────
+// ── RUN (Administrator required) ───────────────────────────────────────────────
 //   Synthetic-only (recommended — no real source folder needed):
 //     PhantomFS.exe --virtroot C:\Honeypot --syntheticonly
 //
@@ -54,13 +54,25 @@
 //
 // ── CONFIGURATION ─────────────────────────────────────────────────────────────
 //   PhantomFS.exe.config  (same directory as the exe)
-//     <settings>           — alerting, logging, and path options
+//     <settings>           — alerting, logging, cleanup, and path options
 //     <syntheticFileList>  — virtual file tree (paths, sizes, timestamps)
 //     <syntheticTemplates> — content returned when files are opened
 //   Edit and restart; no recompile needed.
 //
-// ── VERSION ───────────────────────────────────────────────────────────────────
+// ── VERSION ──────────────────────────────────────────────────────────────────
 //   1.0.0  Initial release — ProjFS honeypot with Event Log and Toast alerts.
+//   1.1.0  Auto-cleanup of materialized synthetic files after configurable
+//          delay.  Remote session logging — captures SMB username and source
+//          address when a honeypot file is accessed over a network share.
+//   1.1.1  Fix: DNS resolution isolated from NetSessionEnum so a .NET config
+//          initialisation exception never suppresses captured session data.
+//          Fix: deduplicate sessions — Windows reports negotiation + auth
+//          sessions as separate entries with differing username casing.
+//   1.1.2  Fix: CleanupCallback replaced File.Delete with PrjUpdateFileIfNeeded.
+//          File.Delete on a ProjFS placeholder creates a tombstone that
+//          permanently blocks re-projection; PrjUpdateFileIfNeeded reverts
+//          the file to an unhydrated placeholder without a tombstone so the
+//          file stays visible and re-triggers alerts on the next access.
 //
 
 using System;
@@ -68,8 +80,10 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Xml;
 using Synthetic;
 
@@ -81,7 +95,8 @@ namespace Synthetic
 {
     // -------------------------------------------------------------------------
     // PhantomFSSettings — reads <settings> from <exe>.exe.config at startup.
-    // All properties fall back to safe defaults when the section is absent.
+    // All properties fall back to safe defaults when the section is absent,
+    // so v1.0.0 config files continue to work without modification.
     // -------------------------------------------------------------------------
     internal static class PhantomFSSettings
     {
@@ -94,6 +109,15 @@ namespace Synthetic
         public static string ConfigVirtRoot         = null;
         public static string ConfigSourceRoot       = null;
         public static bool   ConfigSyntheticOnly    = false;
+
+        // v1.1.0 — auto-cleanup of materialized synthetic placeholders.
+        // Both keys are optional; defaults ensure backwards compatibility.
+        public static bool   AutoCleanupEnabled      = true;
+        public static int    AutoCleanupDelaySeconds = 300;   // 5 minutes
+
+        // v1.1.0 — DNS reverse-lookup of the SMB client hostname.
+        // Set to false if the lookup latency is unacceptable in your environment.
+        public static bool   ResolveRemoteIPs        = true;
 
         public static void Load(string configPath)
         {
@@ -112,10 +136,15 @@ namespace Synthetic
                 ToastCooldownSeconds = ReadInt   (doc, "/configuration/settings/toastCooldownSeconds", 15);
                 ConfigVirtRoot       = ReadString(doc, "/configuration/settings/virtRoot");
                 ConfigSourceRoot     = ReadString(doc, "/configuration/settings/sourceRoot");
+
+                // v1.1.0 keys — safe defaults keep v1.0.0 configs working unchanged
+                AutoCleanupEnabled      = ReadBool(doc, "/configuration/settings/autoCleanupEnabled",      true);
+                AutoCleanupDelaySeconds = ReadInt (doc, "/configuration/settings/autoCleanupDelaySeconds", 300);
+                ResolveRemoteIPs        = ReadBool(doc, "/configuration/settings/resolveRemoteIPs",        true);
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("[WARN] Could not load <settings> from config \u2014 " + ex.Message);
+                Console.Error.WriteLine("[WARN] Could not load <settings> from config — " + ex.Message);
             }
         }
 
@@ -176,55 +205,91 @@ namespace Synthetic
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("[WARN] EventLog source registration failed \u2014 " + ex.Message);
+                Console.Error.WriteLine("[WARN] EventLog source registration failed — " + ex.Message);
             }
         }
 
         public static void OnProviderStarted(string virtRoot)
         {
             WriteLog(
-                "PhantomFS \u2014 Provider Started\r\n"
+                "PhantomFS — Provider Started\r\n"
               + "VirtRoot : " + virtRoot + "\r\n"
-              + "EventLog : " + PhantomFSSettings.EnableEventLog + "  "
-              + "Toast : "    + PhantomFSSettings.EnableToast,
+              + "EventLog : " + PhantomFSSettings.EnableEventLog
+              + "  Toast : "  + PhantomFSSettings.EnableToast + "\r\n"
+              + "Cleanup  : " + (PhantomFSSettings.AutoCleanupEnabled
+                    ? "enabled (" + PhantomFSSettings.AutoCleanupDelaySeconds + "s)"
+                    : "disabled"),
                 EventLogEntryType.Information, EvtStarted);
         }
 
         public static void OnProviderStopped(string virtRoot)
         {
-            WriteLog("PhantomFS \u2014 Provider Stopped\r\nVirtRoot: " + virtRoot,
+            WriteLog("PhantomFS — Provider Stopped\r\nVirtRoot: " + virtRoot,
                 EventLogEntryType.Information, EvtStopped);
         }
 
         // Fires when a process first opens a honeypot file (placeholder created).
-        public static void OnPlaceholderCreated(string path, string proc, uint pid)
+        // sessions is non-null when the access originated from an SMB client.
+        public static void OnPlaceholderCreated(string path, string proc, uint pid,
+            List<RemoteSessionHelper.SessionInfo> sessions)
         {
             if (!PhantomFSSettings.AlertOnOpen) return;
 
-            string msg = "PhantomFS \u2014 Honeypot File Opened\r\n"
+            string sessionStr = RemoteSessionHelper.FormatSessions(sessions);
+            string msg = "PhantomFS — Honeypot File Opened\r\n"
                        + "File    : " + path + "\r\n"
-                       + "Process : " + Proc(proc, pid);
+                       + "Process : " + Proc(proc, pid)
+                       + sessionStr;
 
-            Console.WriteLine("[ALERT:OPEN]  " + path + " \u2014 " + Proc(proc, pid));
+            bool   isRemote = sessions != null && sessions.Count > 0;
+            string remTag   = isRemote ? "  [REMOTE]" : string.Empty;
+            Console.WriteLine("[ALERT:OPEN]  " + path + " — " + Proc(proc, pid) + remTag);
             WriteLog(msg, EventLogEntryType.Warning, EvtFilePlaceholder);
-            // Toast is deferred to OnFileAccessed (content read) — stronger signal.
+            // Toast deferred to OnFileAccessed — content read is the stronger signal.
         }
 
         // Fires when a process reads content from a honeypot file.
         // This is the primary alert trigger and sends both log entry and Toast.
-        public static void OnFileAccessed(string path, uint pid, string proc)
+        // sessions is non-null when the access originated from an SMB client.
+        public static void OnFileAccessed(string path, uint pid, string proc,
+            List<RemoteSessionHelper.SessionInfo> sessions)
         {
             if (!PhantomFSSettings.AlertOnRead) return;
 
-            string msg = "PhantomFS \u2014 Honeypot File Content Read\r\n"
+            string sessionStr = RemoteSessionHelper.FormatSessions(sessions);
+            string msg = "PhantomFS — Honeypot File Content Read\r\n"
                        + "File    : " + path + "\r\n"
-                       + "Process : " + Proc(proc, pid);
+                       + "Process : " + Proc(proc, pid)
+                       + sessionStr;
 
-            Console.WriteLine("[ALERT:READ]  " + path + " \u2014 " + Proc(proc, pid));
+            bool   isRemote = sessions != null && sessions.Count > 0;
+            string remTag   = isRemote ? "  [REMOTE]" : string.Empty;
+            Console.WriteLine("[ALERT:READ]  " + path + " — " + Proc(proc, pid) + remTag);
             WriteLog(msg, EventLogEntryType.Warning, EvtFileRead);
 
             if (PhantomFSSettings.EnableToast && CooldownExpired(path))
-                SendToast("PhantomFS \u2014 Honeypot File Accessed", path + "  (" + Proc(proc, pid) + ")");
+            {
+                string toastTitle = "PhantomFS — Honeypot File Accessed";
+                string toastBody;
+
+                if (isRemote)
+                {
+                    // Include SMB user and source address in the Toast body.
+                    RemoteSessionHelper.SessionInfo first = sessions[0];
+                    toastBody = path + "\r\n"
+                              + "User: " + first.UserName
+                              + "  From: " + first.ClientName
+                              + (string.IsNullOrEmpty(first.ClientIP)
+                                    ? string.Empty
+                                    : "  [" + first.ClientIP + "]");
+                }
+                else
+                {
+                    toastBody = path + "  (" + Proc(proc, pid) + ")";
+                }
+
+                SendToast(toastTitle, toastBody);
+            }
         }
 
         // ---- Private helpers ----
@@ -248,7 +313,7 @@ namespace Synthetic
         {
             if (!_logReady || !PhantomFSSettings.EnableEventLog) return;
             try { EventLog.WriteEntry(SourceName, msg, type, id); }
-            catch (Exception ex) { Console.Error.WriteLine("[WARN] EventLog write failed \u2014 " + ex.Message); }
+            catch (Exception ex) { Console.Error.WriteLine("[WARN] EventLog write failed — " + ex.Message); }
         }
 
         // Sends a Windows Toast notification by launching a hidden PowerShell process.
@@ -298,7 +363,7 @@ namespace Synthetic
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("[WARN] Toast notification failed \u2014 " + ex.Message);
+                Console.Error.WriteLine("[WARN] Toast notification failed — " + ex.Message);
             }
         }
 
@@ -310,6 +375,211 @@ namespace Synthetic
                     .Replace(">", "&gt;")
                     .Replace("\"", "&quot;")
                     .Replace("'", "&apos;");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // RemoteSessionHelper — detects SMB/network file access and enumerates
+    // active sessions via NetSessionEnum to capture the remote username and
+    // source address.
+    //
+    // Detection heuristic: ProjFS reports PID 4 (the Windows System process)
+    // as the triggering process when the file access originates from the SMB
+    // kernel driver (srv2.sys).  An empty process image name is treated the
+    // same way.
+    //
+    // NetSessionEnum requires the Server service to be running (it is by
+    // default whenever a share is active).  The call is a fast local RPC;
+    // DNS resolution is the only potentially slow operation and can be
+    // disabled via resolveRemoteIPs=false in the config.
+    // -------------------------------------------------------------------------
+    internal static class RemoteSessionHelper
+    {
+        public sealed class SessionInfo
+        {
+            public string UserName;
+            public string ClientName;   // hostname / NetBIOS name as reported by SMB
+            public string ClientIP;     // DNS-resolved IP, or empty when resolution
+                                        // fails or resolveRemoteIPs is false
+        }
+
+        // SESSION_INFO_10 — x64 layout:
+        //   offset  0  LMSTR sesi10_cname     (8-byte pointer)
+        //   offset  8  LMSTR sesi10_username  (8-byte pointer)
+        //   offset 16  DWORD sesi10_time      (4 bytes)
+        //   offset 20  DWORD sesi10_idle_time (4 bytes)
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SESSION_INFO_10
+        {
+            public IntPtr ClientNamePtr;
+            public IntPtr UserNamePtr;
+            public uint   Time;
+            public uint   IdleTime;
+        }
+
+        [DllImport("Netapi32.dll", CharSet = CharSet.Unicode)]
+        private static extern int NetSessionEnum(
+            string serverName, string uncClientName, string userName,
+            int level, out IntPtr bufPtr, int prefMaxLen,
+            out int entriesRead, out int totalEntries, ref int resumeHandle);
+
+        [DllImport("Netapi32.dll")]
+        private static extern int NetApiBufferFree(IntPtr buffer);
+
+        private const int ERROR_MORE_DATA = 234;
+
+        // Returns true when the triggering process is likely the SMB kernel driver.
+        // PID 4 = Windows System process; an empty image path also signals a
+        // kernel-mode caller.
+        public static bool IsLikelyRemote(uint pid, string procName)
+        {
+            if (pid == 4) return true;
+            if (string.IsNullOrEmpty(procName)) return true;
+            return false;
+        }
+
+        // Enumerates active SMB sessions on this host.
+        // Returns an empty list when no sessions are open or when the Server
+        // service is unavailable.  Partial results are returned if the buffer
+        // fills before all sessions are read (unlikely in practice).
+        //
+        // DNS resolution is performed as a separate pass after the NetSessionEnum
+        // call completes and the buffer is freed.  This ensures that a DNS failure
+        // (including the ConfigurationErrorsException that fires on first use when
+        // the app config contains unrecognised sections) never suppresses the
+        // username and hostname that were already captured from the session buffer.
+        //
+        // Duplicate sessions — Windows sometimes returns two entries for the same
+        // connection with differing username casing (one for the negotiation phase,
+        // one for the authenticated session).  A case-insensitive deduplication pass
+        // collapses these before the list is returned.
+        public static List<SessionInfo> GetActiveSessions()
+        {
+            List<SessionInfo> result = new List<SessionInfo>();
+            IntPtr buf       = IntPtr.Zero;
+            int resumeHandle = 0;
+
+            // ---- Phase 1: session enumeration (no DNS, no managed I/O) ----
+            try
+            {
+                int entriesRead, totalEntries;
+                int hr = NetSessionEnum(
+                    null, null, null, 10,
+                    out buf, -1,
+                    out entriesRead, out totalEntries,
+                    ref resumeHandle);
+
+                // hr == 0 is NERR_Success; 234 is ERROR_MORE_DATA (partial results).
+                // Both are usable — anything else indicates a real failure.
+                if (hr != 0 && hr != ERROR_MORE_DATA)
+                    return result;
+                if (buf == IntPtr.Zero || entriesRead == 0)
+                    return result;
+
+                int sz = Marshal.SizeOf(typeof(SESSION_INFO_10));
+                for (int i = 0; i < entriesRead; i++)
+                {
+                    SESSION_INFO_10 s = (SESSION_INFO_10)Marshal.PtrToStructure(
+                        IntPtr.Add(buf, i * sz), typeof(SESSION_INFO_10));
+
+                    string clientName = s.ClientNamePtr != IntPtr.Zero
+                        ? (Marshal.PtrToStringUni(s.ClientNamePtr) ?? string.Empty)
+                        : string.Empty;
+                    string userName = s.UserNamePtr != IntPtr.Zero
+                        ? (Marshal.PtrToStringUni(s.UserNamePtr) ?? string.Empty)
+                        : string.Empty;
+
+                    // SMB reports the client as \\hostname; strip the leading backslashes.
+                    SessionInfo si = new SessionInfo();
+                    si.UserName   = userName;
+                    si.ClientName = clientName.TrimStart('\\');
+                    si.ClientIP   = string.Empty;
+                    result.Add(si);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("[WARN] NetSessionEnum — " + ex.Message);
+            }
+            finally
+            {
+                if (buf != IntPtr.Zero)
+                    try { NetApiBufferFree(buf); } catch { }
+            }
+
+            // ---- Phase 2: deduplication ----
+            // Windows sometimes reports the same connection twice with differing
+            // username casing (negotiation session vs. authenticated session).
+            // Keep only the first occurrence of each username+hostname pair.
+            List<SessionInfo> deduped = new List<SessionInfo>();
+            foreach (SessionInfo si in result)
+            {
+                bool seen = false;
+                foreach (SessionInfo existing in deduped)
+                {
+                    if (string.Equals(si.UserName,   existing.UserName,
+                                StringComparison.OrdinalIgnoreCase)
+                     && string.Equals(si.ClientName, existing.ClientName,
+                                StringComparison.OrdinalIgnoreCase))
+                    {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) deduped.Add(si);
+            }
+            result = deduped;
+
+            // ---- Phase 3: DNS resolution (isolated — failures never discard sessions) ----
+            if (PhantomFSSettings.ResolveRemoteIPs)
+            {
+                foreach (SessionInfo si in result)
+                {
+                    try   { si.ClientIP = ResolveToIP(si.ClientName); }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("[WARN] DNS resolution failed — " + ex.Message);
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        // Attempts to resolve a hostname to an IP address string.
+        // Returns the input unchanged if it is already an IP, or an empty string
+        // if DNS resolution fails.
+        private static string ResolveToIP(string hostName)
+        {
+            if (string.IsNullOrEmpty(hostName)) return string.Empty;
+            IPAddress addr;
+            if (IPAddress.TryParse(hostName, out addr)) return hostName;
+            try
+            {
+                IPAddress[] addrs = Dns.GetHostAddresses(hostName);
+                if (addrs.Length > 0) return addrs[0].ToString();
+            }
+            catch { }
+            return string.Empty;
+        }
+
+        // Formats a session list for inclusion in Event Log messages.
+        // Returns an empty string when the list is null or empty.
+        public static string FormatSessions(List<SessionInfo> sessions)
+        {
+            if (sessions == null || sessions.Count == 0) return string.Empty;
+            StringBuilder sb = new StringBuilder();
+            foreach (SessionInfo s in sessions)
+            {
+                sb.Append("\r\nRemote  : ").Append(s.UserName);
+                if (!string.IsNullOrEmpty(s.ClientName))
+                    sb.Append(" @ ").Append(s.ClientName);
+                if (!string.IsNullOrEmpty(s.ClientIP)
+                    && !string.Equals(s.ClientIP, s.ClientName,
+                            StringComparison.OrdinalIgnoreCase))
+                    sb.Append("  [").Append(s.ClientIP).Append("]");
+            }
+            return sb.ToString();
         }
     }
 
@@ -381,7 +651,7 @@ namespace Synthetic
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("[WARN] Could not load file list \u2014 " + ex.Message);
+                Console.Error.WriteLine("[WARN] Could not load file list — " + ex.Message);
                 return null;
             }
         }
@@ -446,7 +716,7 @@ namespace Synthetic
     //   type="pem"   — deterministic LCG-generated PEM block sized to fileSize
     //   (CDATA text) — static text, padded/trimmed to match fileSize
     //
-    // Match order:  exact filename match → file extension → built-in fallback
+    // Match order:  exact filename match \u2192 file extension \u2192 built-in fallback
     // -------------------------------------------------------------------------
     internal static class SyntheticContent
     {
@@ -467,7 +737,7 @@ namespace Synthetic
 
             if (!File.Exists(configPath))
             {
-                Console.WriteLine("[INFO] Config not found \u2014 synthetic files will return generic text.");
+                Console.WriteLine("[INFO] Config not found — synthetic files will return generic text.");
                 return;
             }
 
@@ -499,7 +769,7 @@ namespace Synthetic
             }
             catch (Exception ex)
             {
-                Console.Error.WriteLine("[WARN] Could not load templates \u2014 " + ex.Message);
+                Console.Error.WriteLine("[WARN] Could not load templates — " + ex.Message);
                 return;
             }
             Console.WriteLine("  Loaded " + count + " content templates from config.");
@@ -518,7 +788,7 @@ namespace Synthetic
             if (_exact != null && _exact.TryGetValue(lower, out te)) return Produce(te, size);
             string ext = Path.GetExtension(lower);
             if (!string.IsNullOrEmpty(ext) && _ext != null && _ext.TryGetValue(ext, out te)) return Produce(te, size);
-            return "# " + lower + "\n# Synthetic honeypot file \u2014 add a <template> to PhantomFS.exe.config\n";
+            return "# " + lower + "\n# Synthetic honeypot file — add a <template> to PhantomFS.exe.config\n";
         }
 
         private static string Produce(TemplateEntry te, long size)
@@ -705,6 +975,26 @@ internal static class Prj
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PrjFileNameMatch(string fileName, string pattern);
 
+    // PRJ_UPDATE_TYPES flags — passed to PrjUpdateFileIfNeeded.
+    // Dirty = modified by a caller since the placeholder was created.
+    // Tombstone = the path was deleted; update converts it back to a placeholder.
+    public const uint PRJ_UPDATE_ALLOW_DIRTY_METADATA = 0x00000001;
+    public const uint PRJ_UPDATE_ALLOW_DIRTY_DATA     = 0x00000002;
+    public const uint PRJ_UPDATE_ALLOW_TOMBSTONE      = 0x00000004;
+    public const uint PRJ_UPDATE_ALLOW_READ_ONLY      = 0x00000008;
+
+    // Reverts a hydrated or tombstoned placeholder back to an unhydrated state.
+    // Unlike File.Delete, this does NOT create a tombstone — the file remains
+    // visible in the virtual directory and the next read re-triggers GetFileData.
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    public static extern int PrjUpdateFileIfNeeded(
+        IntPtr namespaceVirtualizationContext,
+        string destinationFileName,
+        [In] byte[] placeholderInfo,
+        uint placeholderInfoSize,
+        uint updateFlags,
+        out uint failureReason);
+
     // PRJ_CALLBACK_DATA field offsets (x64 layout)
     public static int    CbdFlags    (IntPtr c) { return Marshal.ReadInt32(c,  4); }
     public static IntPtr CbdVirtCtx  (IntPtr c) { return Marshal.ReadIntPtr(c, 8); }
@@ -777,8 +1067,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         Console.WriteLine();
-        Console.WriteLine("  PhantomFS v1.0.0  \u2014  Virtual Honeypot File System");
-        Console.WriteLine("  " + new string('\u2500', 50));
+        Console.WriteLine("  PhantomFS v1.1.2  —  Virtual Honeypot File System");
+        Console.WriteLine("  " + new string('─', 50));
         Console.WriteLine();
 
         // Locate config
@@ -843,6 +1133,10 @@ internal static class Program
         Console.WriteLine("  Mode     : " + (syntheticOnly ? "synthetic-only" : "mixed"));
         Console.WriteLine("  EventLog : " + PhantomFSSettings.EnableEventLog
                         + "   Toast : " + PhantomFSSettings.EnableToast);
+        Console.WriteLine("  Cleanup  : "
+            + (PhantomFSSettings.AutoCleanupEnabled
+                ? "enabled — " + PhantomFSSettings.AutoCleanupDelaySeconds + "s delay"
+                : "disabled"));
         Console.WriteLine();
         Console.WriteLine("  Press ENTER to stop\u2026");
 
@@ -886,6 +1180,15 @@ internal sealed class PhantomFSProvider
 
     private readonly ConcurrentDictionary<Guid, EnumerationSession> _sessions
         = new ConcurrentDictionary<Guid, EnumerationSession>();
+
+    // Tracks synthetic files that have been materialized to disk, keyed by
+    // their relative path.  The value is the UTC time of first hydration.
+    // The cleanup timer reads and removes entries from this dictionary on its
+    // own thread — ConcurrentDictionary ensures thread safety.
+    private readonly ConcurrentDictionary<string, DateTime> _materializedFiles
+        = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+    private Timer _cleanupTimer;
 
     private static PhantomFSProvider _current;
 
@@ -934,7 +1237,7 @@ internal sealed class PhantomFSProvider
             if (existing.Length > 0)
             {
                 Console.WriteLine();
-                Console.WriteLine("  [SAFETY] VirtRoot is not empty \u2014 "
+                Console.WriteLine("  [SAFETY] VirtRoot is not empty — "
                                 + existing.Length + " item(s) detected:");
                 Console.WriteLine("  " + _virtRoot);
                 Console.WriteLine();
@@ -966,14 +1269,96 @@ internal sealed class PhantomFSProvider
         cbs.GetPlaceholderInfo = Marshal.GetFunctionPointerForDelegate(_cbPhi);
         cbs.GetFileData        = Marshal.GetFunctionPointerForDelegate(_cbData);
 
-        return Prj.PrjStartVirtualizing(_virtRoot, ref cbs, IntPtr.Zero, IntPtr.Zero, out _virtCtx);
+        int startHr = Prj.PrjStartVirtualizing(_virtRoot, ref cbs, IntPtr.Zero, IntPtr.Zero, out _virtCtx);
+
+        if (startHr == Prj.S_OK && PhantomFSSettings.AutoCleanupEnabled)
+        {
+            // Check every 30 seconds; delete files older than AutoCleanupDelaySeconds.
+            _cleanupTimer = new Timer(
+                CleanupCallback, null,
+                TimeSpan.FromSeconds(30),
+                TimeSpan.FromSeconds(30));
+            Log("[CLEANUP] Timer started — delay=" + PhantomFSSettings.AutoCleanupDelaySeconds + "s");
+        }
+
+        return startHr;
     }
 
     public void StopVirtualizing()
     {
+        if (_cleanupTimer != null)
+        {
+            _cleanupTimer.Dispose();
+            _cleanupTimer = null;
+        }
         if (_virtCtx == IntPtr.Zero) return;
         Prj.PrjStopVirtualizing(_virtCtx);
         _virtCtx = IntPtr.Zero;
+    }
+
+    // ---- Auto-cleanup callback ----
+
+    // Runs on a thread-pool thread every 30 seconds.
+    // For each synthetic file whose first-hydration time exceeds
+    // AutoCleanupDelaySeconds, calls PrjUpdateFileIfNeeded to revert it from
+    // hydrated state back to an unhydrated placeholder.
+    //
+    // Why PrjUpdateFileIfNeeded instead of File.Delete:
+    //   File.Delete on a ProjFS placeholder creates a tombstone — a special
+    //   reparse marker that permanently blocks re-projection of that path until
+    //   the tombstone is explicitly cleared.  Deleted files therefore disappear
+    //   from the virtual directory and never trigger alerts again.
+    //   PrjUpdateFileIfNeeded reverts the on-disk state atomically without
+    //   creating a tombstone: the file stays visible in directory listings,
+    //   its content is invalidated, and the next read fires a fresh GetFileData
+    //   callback (and therefore a fresh alert).
+    private void CleanupCallback(object state)
+    {
+        if (!PhantomFSSettings.AutoCleanupEnabled) return;
+        if (_synthetic == null || _virtCtx == IntPtr.Zero) return;
+
+        TimeSpan threshold = TimeSpan.FromSeconds(PhantomFSSettings.AutoCleanupDelaySeconds);
+        DateTime now       = DateTime.UtcNow;
+
+        foreach (KeyValuePair<string, DateTime> kvp in _materializedFiles)
+        {
+            if ((now - kvp.Value) < threshold) continue;
+
+            SyntheticEntry s = _synthetic.Find(kvp.Key);
+            if (s == null || s.IsDirectory) continue;
+
+            // Rebuild the original placeholder info for this synthetic entry.
+            long   ft = s.GetFiletime();
+            byte[] ph = Prj.BuildPlaceholderInfo(
+                false, s.FileSize, ft, ft, ft, ft, 0x20u);
+
+            // PRJ_UPDATE_ALLOW_DIRTY_DATA     — file may have been read/cached
+            // PRJ_UPDATE_ALLOW_DIRTY_METADATA — timestamps may have been touched
+            // PRJ_UPDATE_ALLOW_TOMBSTONE      — handle the edge case where a
+            //                                    tombstone already exists so we
+            //                                    can restore the file in that case too
+            uint failureReason;
+            int  revertHr = Prj.PrjUpdateFileIfNeeded(
+                _virtCtx, kvp.Key, ph, (uint)ph.Length,
+                  Prj.PRJ_UPDATE_ALLOW_DIRTY_DATA
+                | Prj.PRJ_UPDATE_ALLOW_DIRTY_METADATA
+                | Prj.PRJ_UPDATE_ALLOW_TOMBSTONE,
+                out failureReason);
+
+            if (revertHr == Prj.S_OK)
+            {
+                Log("[CLEANUP] Reverted to placeholder: " + kvp.Key);
+                DateTime dummy;
+                _materializedFiles.TryRemove(kvp.Key, out dummy);
+            }
+            else
+            {
+                // File is likely still open — leave in the dictionary and retry next cycle.
+                Log("[CLEANUP] Revert failed: " + kvp.Key
+                    + " — " + Prj.Hr(revertHr)
+                    + " (failureReason=0x" + failureReason.ToString("X") + ")");
+            }
+        }
     }
 
     // ---- Static thunks ----
@@ -1058,7 +1443,13 @@ internal sealed class PhantomFSProvider
 
         Log("GetPlaceholderInfo [" + rel + "] proc=" + proc + " pid=" + pid);
 
-        // ── Real source ──────────────────────────────────────────────
+        // Detect SMB/network access — PID 4 is the Windows System process, which
+        // is the triggering PID when the kernel SMB driver (srv2.sys) opens a file.
+        List<RemoteSessionHelper.SessionInfo> sessions = null;
+        if (RemoteSessionHelper.IsLikelyRemote(pid, proc))
+            sessions = RemoteSessionHelper.GetActiveSessions();
+
+        // ── Real source ──────────────────────────────────────────────────────────────
         if (!_syntheticOnly)
         {
             FileSystemInfo fsi = SrcFsi(SrcPath(rel));
@@ -1076,7 +1467,7 @@ internal sealed class PhantomFSProvider
             }
         }
 
-        // ── Synthetic ────────────────────────────────────────────────
+        // ── Synthetic ────────────────────────────────────────────────────────────────
         if (_synthetic != null)
         {
             SyntheticEntry s = _synthetic.Find(rel);
@@ -1089,7 +1480,7 @@ internal sealed class PhantomFSProvider
 
                 int hr2 = Prj.PrjWritePlaceholderInfo(vCtx, rel, ph, (uint)ph.Length);
                 if (hr2 == Prj.S_OK && !s.IsDirectory)
-                    AlertManager.OnPlaceholderCreated(rel, proc, pid);
+                    AlertManager.OnPlaceholderCreated(rel, proc, pid, sessions);
 
                 Log("Phi(synthetic) " + Prj.Hr(hr2));
                 return hr2;
@@ -1109,10 +1500,15 @@ internal sealed class PhantomFSProvider
 
         Log("GetFileData [" + rel + "] offset=" + byteOffset + " len=" + length);
 
-        // PRIMARY ALERT — a process is reading honeypot file content
-        AlertManager.OnFileAccessed(rel, pid, proc);
+        // Detect SMB/network access — PID 4 indicates the kernel SMB driver.
+        List<RemoteSessionHelper.SessionInfo> sessions = null;
+        if (RemoteSessionHelper.IsLikelyRemote(pid, proc))
+            sessions = RemoteSessionHelper.GetActiveSessions();
 
-        // ── Real source ──────────────────────────────────────────────
+        // PRIMARY ALERT — a process is reading honeypot file content
+        AlertManager.OnFileAccessed(rel, pid, proc, sessions);
+
+        // ── Real source ──────────────────────────────────────────────────────────────
         if (!_syntheticOnly)
         {
             string full = SrcPath(rel);
@@ -1120,19 +1516,30 @@ internal sealed class PhantomFSProvider
             {
                 byte[] data;
                 try { data = File.ReadAllBytes(full); }
-                catch (Exception ex) { Log("[WARN] Read error \u2014 " + ex.Message); return Prj.E_FAIL; }
+                catch (Exception ex) { Log("[WARN] Read error — " + ex.Message); return Prj.E_FAIL; }
                 return WriteData(vCtx, ref sid, data, byteOffset, length);
             }
         }
 
-        // ── Synthetic content ────────────────────────────────────────
+        // ── Synthetic content ────────────────────────────────────────────────────────
         if (_synthetic != null)
         {
             SyntheticEntry s = _synthetic.Find(rel);
             if (s != null && !s.IsDirectory)
-                return WriteData(vCtx, ref sid,
+            {
+                int writeHr = WriteData(vCtx, ref sid,
                     SyntheticContent.Generate(s.Name, s.FileSize),
                     byteOffset, length);
+
+                // Record the materialization time so the cleanup timer can revert
+                // this file back to a virtual placeholder after the configured delay.
+                // TryAdd is a no-op if the key already exists — we only want the
+                // time of first hydration, not the most recent partial read.
+                if (writeHr == Prj.S_OK && PhantomFSSettings.AutoCleanupEnabled)
+                    _materializedFiles.TryAdd(rel, DateTime.UtcNow);
+
+                return writeHr;
+            }
         }
 
         return Prj.HR_FILE_NOT_FOUND;
