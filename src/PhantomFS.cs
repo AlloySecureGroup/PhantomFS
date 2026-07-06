@@ -1374,6 +1374,7 @@ internal static class Program
         string sourceRoot = PhantomFSSettings.ConfigSourceRoot;
         string virtualRoot = PhantomFSSettings.ConfigVirtRoot;
         bool syntheticOnly = PhantomFSSettings.ConfigSyntheticOnly;
+        bool forceService = false;
 
         for (int argIndex = 0; argIndex < args.Length; argIndex++)
         {
@@ -1381,6 +1382,15 @@ internal static class Program
             if (flag.Equals("--syntheticonly", StringComparison.OrdinalIgnoreCase))
             {
                 syntheticOnly = true;
+                continue;
+            }
+
+            if (flag.Equals("--service", StringComparison.OrdinalIgnoreCase))
+            {
+                // Force non-interactive mode regardless of Environment.UserInteractive.
+                // Use this when launched by Task Scheduler or a service host so the
+                // process blocks until stopped instead of reading stdin.
+                forceService = true;
                 continue;
             }
 
@@ -1453,6 +1463,14 @@ internal static class Program
             return 1;
         }
 
+        // Whether a real interactive console is attached. When launched by Task
+        // Scheduler as SYSTEM there is no console: stdin is closed and
+        // Console.ReadLine() returns null immediately, which would make the
+        // process fall through and exit right after starting. In that case block
+        // on a signal instead and keep running until the task/service is stopped.
+        // --service forces this path even when UserInteractive misreports.
+        bool interactive = Environment.UserInteractive && !forceService;
+
         Console.WriteLine();
         Console.WriteLine("  [OK] Provider running.");
         Console.WriteLine("  VirtRoot : " + Path.GetFullPath(virtualRoot));
@@ -1469,29 +1487,48 @@ internal static class Program
                 ? "enabled - " + PhantomFSSettings.AutoCleanupDelaySeconds + "s delay"
                 : "disabled"));
         Console.WriteLine();
-        Console.WriteLine("  Press ENTER to stop...");
+        Console.WriteLine(interactive
+            ? "  Press ENTER to stop..."
+            : "  Running non-interactively. Stop the task/service to shut down.");
 
         AlertManager.OnProviderStarted(Path.GetFullPath(virtualRoot));
 
+        // Signal released to unblock the main thread during shutdown.
+        ManualResetEvent shutdownSignal = new ManualResetEvent(false);
+
         // Guarantee shutdown cleanup on Ctrl+C and on normal process exit, not
-        // just on ENTER.  StopVirtualizing is idempotent, so overlapping paths
-        // (ENTER plus ProcessExit, or Ctrl+C plus ProcessExit) are safe.
+        // just on ENTER. StopVirtualizing is idempotent, so overlapping paths
+        // are safe. ProcessExit is what fires when Task Scheduler ends the task
+        // or the service host stops the process.
         Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs eventArgs)
         {
             eventArgs.Cancel = true;   // run our cleanup instead of a hard kill
             Console.WriteLine();
             Console.WriteLine("  Ctrl+C received - stopping...");
-            AlertManager.OnProviderStopped(Path.GetFullPath(virtualRoot));
-            provider.StopVirtualizing();
-            Console.WriteLine("  PhantomFS stopped.");
-            Environment.Exit(0);
+            shutdownSignal.Set();
         };
         AppDomain.CurrentDomain.ProcessExit += delegate(object sender, EventArgs eventArgs)
         {
+            AlertManager.OnProviderStopped(Path.GetFullPath(virtualRoot));
             provider.StopVirtualizing();
+            shutdownSignal.Set();
         };
 
-        Console.ReadLine();
+        if (interactive)
+        {
+            // Block on ENTER, but fall back to the signal if stdin returns null
+            // (redirected or closed input) so the process never spins or exits early.
+            if (Console.ReadLine() == null)
+            {
+                shutdownSignal.WaitOne();
+            }
+        }
+        else
+        {
+            // No console: wait until ProcessExit or a stop signal releases us.
+            shutdownSignal.WaitOne();
+        }
+
         AlertManager.OnProviderStopped(Path.GetFullPath(virtualRoot));
         provider.StopVirtualizing();
         Console.WriteLine("  PhantomFS stopped.");
@@ -1502,12 +1539,13 @@ internal static class Program
     {
         Console.WriteLine();
         Console.WriteLine("  Usage:");
-        Console.WriteLine("    PhantomFS.exe --virtroot <path> [--sourceroot <path>] [--syntheticonly]");
+        Console.WriteLine("    PhantomFS.exe --virtroot <path> [--sourceroot <path>] [--syntheticonly] [--service]");
         Console.WriteLine();
         Console.WriteLine("  Options:");
         Console.WriteLine("    --virtroot   <path>   Directory where virtual files appear.");
         Console.WriteLine("    --sourceroot <path>   Real files to mirror alongside synthetic ones.");
         Console.WriteLine("    --syntheticonly       Serve only config-defined synthetic files.");
+        Console.WriteLine("    --service             Run non-interactively (Task Scheduler / service).");
         Console.WriteLine();
         Console.WriteLine("  Notes:");
         Console.WriteLine("    * Requires Administrator.");
