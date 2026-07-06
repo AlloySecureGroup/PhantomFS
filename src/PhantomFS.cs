@@ -1,5 +1,5 @@
 // PhantomFS.cs
-// ProjFS-based honeypot provider — projects synthetic credential, key, and document
+// ProjFS-based honeypot provider - projects synthetic credential, key, and document
 // files into a virtual directory, then alerts via Windows Event Log and Toast
 // notifications whenever a monitored file is opened or its content is read.
 //
@@ -26,7 +26,7 @@
 // IN THE SOFTWARE.
 //
 // Trademark Notice: PhantomFS(TM) is a trademark of Alloy Secure. The MIT license
-// grants rights to this source code only — it does not grant the right to use
+// grants rights to this source code only - it does not grant the right to use
 // the PhantomFS name, logo, or branding in a manner that implies endorsement
 // or competes with the original product.
 //
@@ -36,43 +36,28 @@
 // from use or misuse of this software. USE AT YOUR OWN RISK.
 // ----------------------------------------------------------------------------
 //
-// ── PREREQUISITES ────────────────────────────────────────────────────────────
+// -- PREREQUISITES ------------------------------------------------------------
 //   Windows 10 v1809 (Build 17763) or later with ProjFS enabled.
 //   Run once in an elevated PowerShell to enable the optional feature:
 //     Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart
 //
-// ── COMPILE ──────────────────────────────────────────────────────────────
+// -- COMPILE --------------------------------------------------------------
 //   csc.exe /platform:x64 /r:System.Xml.dll /out:PhantomFS.exe PhantomFS.cs
 //   (csc.exe lives at C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe)
 //
-// ── RUN (Administrator required) ───────────────────────────────────────────────
-//   Synthetic-only (recommended — no real source folder needed):
+// -- RUN (Administrator required) -----------------------------------------------
+//   Synthetic-only (recommended - no real source folder needed):
 //     PhantomFS.exe --virtroot C:\Honeypot --syntheticonly
 //
-//   Mixed — real files plus synthetic entries:
+//   Mixed - real files plus synthetic entries:
 //     PhantomFS.exe --virtroot C:\Honeypot --sourceroot C:\RealFiles
 //
-// ── CONFIGURATION ─────────────────────────────────────────────────────────────
+// -- CONFIGURATION -------------------------------------------------------------
 //   PhantomFS.exe.config  (same directory as the exe)
-//     <settings>           — alerting, logging, cleanup, and path options
-//     <syntheticFileList>  — virtual file tree (paths, sizes, timestamps)
-//     <syntheticTemplates> — content returned when files are opened
+//     <settings>           - alerting, logging, cleanup, and path options
+//     <syntheticFileList>  - virtual file tree (paths, sizes, timestamps)
+//     <syntheticTemplates> - content returned when files are opened
 //   Edit and restart; no recompile needed.
-//
-// ── VERSION ──────────────────────────────────────────────────────────────────
-//   1.0.0  Initial release — ProjFS honeypot with Event Log and Toast alerts.
-//   1.1.0  Auto-cleanup of materialized synthetic files after configurable
-//          delay.  Remote session logging — captures SMB username and source
-//          address when a honeypot file is accessed over a network share.
-//   1.1.1  Fix: DNS resolution isolated from NetSessionEnum so a .NET config
-//          initialisation exception never suppresses captured session data.
-//          Fix: deduplicate sessions — Windows reports negotiation + auth
-//          sessions as separate entries with differing username casing.
-//   1.1.2  Fix: CleanupCallback replaced File.Delete with PrjUpdateFileIfNeeded.
-//          File.Delete on a ProjFS placeholder creates a tombstone that
-//          permanently blocks re-projection; PrjUpdateFileIfNeeded reverts
-//          the file to an unhydrated placeholder without a tombstone so the
-//          file stays visible and re-triggers alerts on the next access.
 //
 
 using System;
@@ -88,112 +73,130 @@ using System.Xml;
 using Synthetic;
 
 // =============================================================================
-// Synthetic virtual file system — namespace: Synthetic
+// Synthetic virtual file system - namespace: Synthetic
 // =============================================================================
 
 namespace Synthetic
 {
     // -------------------------------------------------------------------------
-    // PhantomFSSettings — reads <settings> from <exe>.exe.config at startup.
-    // All properties fall back to safe defaults when the section is absent,
-    // so v1.0.0 config files continue to work without modification.
+    // PhantomFSSettings - reads <settings> from <exe>.exe.config at startup.
+    // All properties fall back to safe defaults when the section is absent.
     // -------------------------------------------------------------------------
     internal static class PhantomFSSettings
     {
-        public static bool   EnableEventLog         = true;
-        public static bool   EnableToast            = true;
-        public static bool   AlertOnOpen            = true;   // placeholder created
-        public static bool   AlertOnRead            = true;   // content read
-        public static int    ToastCooldownSeconds   = 15;
-        public static bool   Verbose                = false;
-        public static string ConfigVirtRoot         = null;
-        public static string ConfigSourceRoot       = null;
-        public static bool   ConfigSyntheticOnly    = false;
+        public static bool EnableEventLog = true;
+        public static bool EnableToast = true;
+        public static bool AlertOnOpen = true;   // placeholder created
+        public static bool AlertOnRead = true;   // content read
+        public static int ToastCooldownSeconds = 15;
+        public static bool Verbose = false;
+        public static string ConfigVirtRoot = null;
+        public static string ConfigSourceRoot = null;
+        public static bool ConfigSyntheticOnly = false;
 
-        // v1.1.0 — auto-cleanup of materialized synthetic placeholders.
-        // Both keys are optional; defaults ensure backwards compatibility.
-        public static bool   AutoCleanupEnabled      = true;
-        public static int    AutoCleanupDelaySeconds = 300;   // 5 minutes
+        // Auto-cleanup of materialized synthetic placeholders.
+        public static bool AutoCleanupEnabled = true;
+        public static int AutoCleanupDelaySeconds = 300;   // 5 minutes
 
-        // v1.1.0 — DNS reverse-lookup of the SMB client hostname.
+        // DNS reverse-lookup of the SMB client hostname.
         // Set to false if the lookup latency is unacceptable in your environment.
-        public static bool   ResolveRemoteIPs        = true;
+        public static bool ResolveRemoteIPs = true;
 
         public static void Load(string configPath)
         {
-            if (!File.Exists(configPath)) return;
+            if (!File.Exists(configPath))
+            {
+                return;
+            }
+
             try
             {
-                XmlDocument doc = new XmlDocument();
-                doc.Load(configPath);
+                XmlDocument configDocument = new XmlDocument();
+                configDocument.Load(configPath);
 
-                EnableEventLog       = ReadBool  (doc, "/configuration/settings/enableEventLog",       true);
-                EnableToast          = ReadBool  (doc, "/configuration/settings/enableToast",          true);
-                AlertOnOpen          = ReadBool  (doc, "/configuration/settings/alertOnOpen",          true);
-                AlertOnRead          = ReadBool  (doc, "/configuration/settings/alertOnRead",          true);
-                Verbose              = ReadBool  (doc, "/configuration/settings/verbose",              false);
-                ConfigSyntheticOnly  = ReadBool  (doc, "/configuration/settings/syntheticOnly",        false);
-                ToastCooldownSeconds = ReadInt   (doc, "/configuration/settings/toastCooldownSeconds", 15);
-                ConfigVirtRoot       = ReadString(doc, "/configuration/settings/virtRoot");
-                ConfigSourceRoot     = ReadString(doc, "/configuration/settings/sourceRoot");
-
-                // v1.1.0 keys — safe defaults keep v1.0.0 configs working unchanged
-                AutoCleanupEnabled      = ReadBool(doc, "/configuration/settings/autoCleanupEnabled",      true);
-                AutoCleanupDelaySeconds = ReadInt (doc, "/configuration/settings/autoCleanupDelaySeconds", 300);
-                ResolveRemoteIPs        = ReadBool(doc, "/configuration/settings/resolveRemoteIPs",        true);
+                EnableEventLog = ReadBool(configDocument, "/configuration/settings/enableEventLog", true);
+                EnableToast = ReadBool(configDocument, "/configuration/settings/enableToast", true);
+                AlertOnOpen = ReadBool(configDocument, "/configuration/settings/alertOnOpen", true);
+                AlertOnRead = ReadBool(configDocument, "/configuration/settings/alertOnRead", true);
+                Verbose = ReadBool(configDocument, "/configuration/settings/verbose", false);
+                ConfigSyntheticOnly = ReadBool(configDocument, "/configuration/settings/syntheticOnly", false);
+                ToastCooldownSeconds = ReadInt(configDocument, "/configuration/settings/toastCooldownSeconds", 15);
+                ConfigVirtRoot = ReadString(configDocument, "/configuration/settings/virtRoot");
+                ConfigSourceRoot = ReadString(configDocument, "/configuration/settings/sourceRoot");
+                AutoCleanupEnabled = ReadBool(configDocument, "/configuration/settings/autoCleanupEnabled", true);
+                AutoCleanupDelaySeconds = ReadInt(configDocument, "/configuration/settings/autoCleanupDelaySeconds", 300);
+                ResolveRemoteIPs = ReadBool(configDocument, "/configuration/settings/resolveRemoteIPs", true);
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                Console.Error.WriteLine("[WARN] Could not load <settings> from config — " + ex.Message);
+                Console.Error.WriteLine("[WARN] Could not load <settings> from config - " + exception.Message);
             }
         }
 
-        private static bool ReadBool(XmlDocument d, string xpath, bool def)
+        private static bool ReadBool(XmlDocument document, string xpath, bool defaultValue)
         {
-            XmlNode n = d.SelectSingleNode(xpath);
-            if (n == null) return def;
-            bool v; return bool.TryParse(n.InnerText.Trim(), out v) ? v : def;
+            XmlNode node = document.SelectSingleNode(xpath);
+            if (node == null)
+            {
+                return defaultValue;
+            }
+
+            bool parsedValue;
+            return bool.TryParse(node.InnerText.Trim(), out parsedValue) ? parsedValue : defaultValue;
         }
 
-        private static int ReadInt(XmlDocument d, string xpath, int def)
+        private static int ReadInt(XmlDocument document, string xpath, int defaultValue)
         {
-            XmlNode n = d.SelectSingleNode(xpath);
-            if (n == null) return def;
-            int v; return int.TryParse(n.InnerText.Trim(), out v) ? v : def;
+            XmlNode node = document.SelectSingleNode(xpath);
+            if (node == null)
+            {
+                return defaultValue;
+            }
+
+            int parsedValue;
+            return int.TryParse(node.InnerText.Trim(), out parsedValue) ? parsedValue : defaultValue;
         }
 
-        private static string ReadString(XmlDocument d, string xpath)
+        private static string ReadString(XmlDocument document, string xpath)
         {
-            XmlNode n = d.SelectSingleNode(xpath);
-            if (n == null) return null;
-            string s = n.InnerText.Trim();
-            return string.IsNullOrEmpty(s) ? null : s;
+            XmlNode node = document.SelectSingleNode(xpath);
+            if (node == null)
+            {
+                return null;
+            }
+
+            string value = node.InnerText.Trim();
+            return string.IsNullOrEmpty(value) ? null : value;
         }
     }
 
     // -------------------------------------------------------------------------
-    // AlertManager — writes to Windows Event Log and sends Toast notifications
+    // AlertManager - writes to Windows Event Log and sends Toast notifications
     // when honeypot files are accessed.  All public methods are thread-safe.
     // -------------------------------------------------------------------------
     internal static class AlertManager
     {
-        private const string SourceName   = "PhantomFS";
-        private const string LogName      = "Application";
+        private const string SourceName = "PhantomFS";
+        private const string LogName = "Application";
 
-        public const int EvtFileRead        = 1001;
-        public const int EvtFilePlaceholder = 1002;
-        public const int EvtStarted         = 1003;
-        public const int EvtStopped         = 1004;
+        public const int EventIdFileRead = 1001;
+        public const int EventIdFilePlaceholder = 1002;
+        public const int EventIdStarted = 1003;
+        public const int EventIdStopped = 1004;
 
-        private static readonly ConcurrentDictionary<string, DateTime> _lastToast
-            = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        private static readonly ConcurrentDictionary<string, DateTime> LastToastTimes =
+            new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
         private static bool _logReady;
 
-        // Call once from Program.Main — registers the EventLog source (admin required).
+        // Call once from Program.Main - registers the EventLog source (admin required).
         public static void Initialize()
         {
-            if (!PhantomFSSettings.EnableEventLog) return;
+            if (!PhantomFSSettings.EnableEventLog)
+            {
+                return;
+            }
+
             try
             {
                 if (!EventLog.SourceExists(SourceName))
@@ -201,91 +204,98 @@ namespace Synthetic
                     EventLog.CreateEventSource(SourceName, LogName);
                     Console.WriteLine("  EventLog source registered: " + SourceName);
                 }
+
                 _logReady = true;
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                Console.Error.WriteLine("[WARN] EventLog source registration failed — " + ex.Message);
+                Console.Error.WriteLine("[WARN] EventLog source registration failed - " + exception.Message);
             }
         }
 
-        public static void OnProviderStarted(string virtRoot)
+        public static void OnProviderStarted(string virtualRoot)
         {
             WriteLog(
-                "PhantomFS — Provider Started\r\n"
-              + "VirtRoot : " + virtRoot + "\r\n"
+                "PhantomFS - Provider Started\r\n"
+              + "VirtRoot : " + virtualRoot + "\r\n"
               + "EventLog : " + PhantomFSSettings.EnableEventLog
-              + "  Toast : "  + PhantomFSSettings.EnableToast + "\r\n"
+              + "  Toast : " + PhantomFSSettings.EnableToast + "\r\n"
               + "Cleanup  : " + (PhantomFSSettings.AutoCleanupEnabled
                     ? "enabled (" + PhantomFSSettings.AutoCleanupDelaySeconds + "s)"
                     : "disabled"),
-                EventLogEntryType.Information, EvtStarted);
+                EventLogEntryType.Information, EventIdStarted);
         }
 
-        public static void OnProviderStopped(string virtRoot)
+        public static void OnProviderStopped(string virtualRoot)
         {
-            WriteLog("PhantomFS — Provider Stopped\r\nVirtRoot: " + virtRoot,
-                EventLogEntryType.Information, EvtStopped);
+            WriteLog("PhantomFS - Provider Stopped\r\nVirtRoot: " + virtualRoot,
+                EventLogEntryType.Information, EventIdStopped);
         }
 
         // Fires when a process first opens a honeypot file (placeholder created).
         // sessions is non-null when the access originated from an SMB client.
-        public static void OnPlaceholderCreated(string path, string proc, uint pid,
+        public static void OnPlaceholderCreated(string filePath, string processName, uint processId,
             List<RemoteSessionHelper.SessionInfo> sessions)
         {
-            if (!PhantomFSSettings.AlertOnOpen) return;
+            if (!PhantomFSSettings.AlertOnOpen)
+            {
+                return;
+            }
 
-            string sessionStr = RemoteSessionHelper.FormatSessions(sessions);
-            string msg = "PhantomFS — Honeypot File Opened\r\n"
-                       + "File    : " + path + "\r\n"
-                       + "Process : " + Proc(proc, pid)
-                       + sessionStr;
+            string sessionText = RemoteSessionHelper.FormatSessions(sessions);
+            string message = "PhantomFS - Honeypot File Opened\r\n"
+                           + "File    : " + filePath + "\r\n"
+                           + "Process : " + DescribeProcess(processName, processId)
+                           + sessionText;
 
-            bool   isRemote = sessions != null && sessions.Count > 0;
-            string remTag   = isRemote ? "  [REMOTE]" : string.Empty;
-            Console.WriteLine("[ALERT:OPEN]  " + path + " — " + Proc(proc, pid) + remTag);
-            WriteLog(msg, EventLogEntryType.Warning, EvtFilePlaceholder);
-            // Toast deferred to OnFileAccessed — content read is the stronger signal.
+            bool isRemote = sessions != null && sessions.Count > 0;
+            string remoteTag = isRemote ? "  [REMOTE]" : string.Empty;
+            Console.WriteLine("[ALERT:OPEN]  " + filePath + " - " + DescribeProcess(processName, processId) + remoteTag);
+            WriteLog(message, EventLogEntryType.Warning, EventIdFilePlaceholder);
+            // Toast deferred to OnFileAccessed - content read is the stronger signal.
         }
 
         // Fires when a process reads content from a honeypot file.
         // This is the primary alert trigger and sends both log entry and Toast.
         // sessions is non-null when the access originated from an SMB client.
-        public static void OnFileAccessed(string path, uint pid, string proc,
+        public static void OnFileAccessed(string filePath, uint processId, string processName,
             List<RemoteSessionHelper.SessionInfo> sessions)
         {
-            if (!PhantomFSSettings.AlertOnRead) return;
-
-            string sessionStr = RemoteSessionHelper.FormatSessions(sessions);
-            string msg = "PhantomFS — Honeypot File Content Read\r\n"
-                       + "File    : " + path + "\r\n"
-                       + "Process : " + Proc(proc, pid)
-                       + sessionStr;
-
-            bool   isRemote = sessions != null && sessions.Count > 0;
-            string remTag   = isRemote ? "  [REMOTE]" : string.Empty;
-            Console.WriteLine("[ALERT:READ]  " + path + " — " + Proc(proc, pid) + remTag);
-            WriteLog(msg, EventLogEntryType.Warning, EvtFileRead);
-
-            if (PhantomFSSettings.EnableToast && CooldownExpired(path))
+            if (!PhantomFSSettings.AlertOnRead)
             {
-                string toastTitle = "PhantomFS — Honeypot File Accessed";
+                return;
+            }
+
+            string sessionText = RemoteSessionHelper.FormatSessions(sessions);
+            string message = "PhantomFS - Honeypot File Content Read\r\n"
+                           + "File    : " + filePath + "\r\n"
+                           + "Process : " + DescribeProcess(processName, processId)
+                           + sessionText;
+
+            bool isRemote = sessions != null && sessions.Count > 0;
+            string remoteTag = isRemote ? "  [REMOTE]" : string.Empty;
+            Console.WriteLine("[ALERT:READ]  " + filePath + " - " + DescribeProcess(processName, processId) + remoteTag);
+            WriteLog(message, EventLogEntryType.Warning, EventIdFileRead);
+
+            if (PhantomFSSettings.EnableToast && CooldownExpired(filePath))
+            {
+                string toastTitle = "PhantomFS - Honeypot File Accessed";
                 string toastBody;
 
                 if (isRemote)
                 {
                     // Include SMB user and source address in the Toast body.
-                    RemoteSessionHelper.SessionInfo first = sessions[0];
-                    toastBody = path + "\r\n"
-                              + "User: " + first.UserName
-                              + "  From: " + first.ClientName
-                              + (string.IsNullOrEmpty(first.ClientIP)
+                    RemoteSessionHelper.SessionInfo firstSession = sessions[0];
+                    toastBody = filePath + "\r\n"
+                              + "User: " + firstSession.UserName
+                              + "  From: " + firstSession.ClientName
+                              + (string.IsNullOrEmpty(firstSession.ClientIP)
                                     ? string.Empty
-                                    : "  [" + first.ClientIP + "]");
+                                    : "  [" + firstSession.ClientIP + "]");
                 }
                 else
                 {
-                    toastBody = path + "  (" + Proc(proc, pid) + ")";
+                    toastBody = filePath + "  (" + DescribeProcess(processName, processId) + ")";
                 }
 
                 SendToast(toastTitle, toastBody);
@@ -294,45 +304,61 @@ namespace Synthetic
 
         // ---- Private helpers ----
 
-        private static string Proc(string name, uint pid)
+        private static string DescribeProcess(string processName, uint processId)
         {
-            return string.IsNullOrEmpty(name) ? "PID " + pid : name + " (PID " + pid + ")";
+            return string.IsNullOrEmpty(processName)
+                ? "PID " + processId
+                : processName + " (PID " + processId + ")";
         }
 
-        private static bool CooldownExpired(string key)
+        private static bool CooldownExpired(string cooldownKey)
         {
             DateTime now = DateTime.UtcNow;
-            TimeSpan cd  = TimeSpan.FromSeconds(PhantomFSSettings.ToastCooldownSeconds);
-            DateTime last;
-            if (_lastToast.TryGetValue(key, out last) && (now - last) < cd) return false;
-            _lastToast[key] = now;
+            TimeSpan cooldown = TimeSpan.FromSeconds(PhantomFSSettings.ToastCooldownSeconds);
+            DateTime lastToast;
+            if (LastToastTimes.TryGetValue(cooldownKey, out lastToast) && (now - lastToast) < cooldown)
+            {
+                return false;
+            }
+
+            LastToastTimes[cooldownKey] = now;
             return true;
         }
 
-        private static void WriteLog(string msg, EventLogEntryType type, int id)
+        private static void WriteLog(string message, EventLogEntryType entryType, int eventId)
         {
-            if (!_logReady || !PhantomFSSettings.EnableEventLog) return;
-            try { EventLog.WriteEntry(SourceName, msg, type, id); }
-            catch (Exception ex) { Console.Error.WriteLine("[WARN] EventLog write failed — " + ex.Message); }
+            if (!_logReady || !PhantomFSSettings.EnableEventLog)
+            {
+                return;
+            }
+
+            try
+            {
+                EventLog.WriteEntry(SourceName, message, entryType, eventId);
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine("[WARN] EventLog write failed - " + exception.Message);
+            }
         }
 
         // Sends a Windows Toast notification by launching a hidden PowerShell process.
-        // Uses the Windows PowerShell AUMID — a standard technique for desktop apps
+        // Uses the Windows PowerShell AUMID - a standard technique for desktop apps
         // that have not registered their own AppUserModelId.
         // The script is Base64-encoded (-EncodedCommand) to avoid quoting pitfalls.
         private static void SendToast(string title, string body)
         {
-            string safeTitle = XmlEsc(title);
-            string safeBody  = XmlEsc(body);
+            string safeTitle = EscapeXml(title);
+            string safeBody = EscapeXml(body);
 
-            // AUMID for Windows PowerShell — works on all Windows 10/11 installs.
-            string aumid = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}"
-                         + "\\WindowsPowerShell\\v1.0\\powershell.exe";
+            // AUMID for Windows PowerShell - works on all Windows 10/11 installs.
+            string applicationUserModelId = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}"
+                                          + "\\WindowsPowerShell\\v1.0\\powershell.exe";
 
             string toastXml = "<toast>"
                             + "<visual><binding template=\"ToastGeneric\">"
                             + "<text>" + safeTitle + "</text>"
-                            + "<text>" + safeBody  + "</text>"
+                            + "<text>" + safeBody + "</text>"
                             + "</binding></visual>"
                             + "</toast>";
 
@@ -345,41 +371,45 @@ namespace Synthetic
                 "$x.LoadXml('", toastXml.Replace("'", "''"), "');",
                 "$t=New-Object Windows.UI.Notifications.ToastNotification $x;",
                 "$n=[Windows.UI.Notifications.ToastNotificationManager]",
-                      "::CreateToastNotifier('", aumid.Replace("'", "''"), "');",
+                      "::CreateToastNotifier('", applicationUserModelId.Replace("'", "''"), "');",
                 "$n.Show($t)"
             );
 
             try
             {
-                byte[] bytes = Encoding.Unicode.GetBytes(script);
-                string b64   = Convert.ToBase64String(bytes);
+                byte[] scriptBytes = Encoding.Unicode.GetBytes(script);
+                string encodedCommand = Convert.ToBase64String(scriptBytes);
 
-                ProcessStartInfo psi = new ProcessStartInfo();
-                psi.FileName               = "powershell.exe";
-                psi.Arguments              = "-NonInteractive -NoProfile -WindowStyle Hidden -EncodedCommand " + b64;
-                psi.UseShellExecute        = false;
-                psi.CreateNoWindow         = true;
-                Process.Start(psi);
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.FileName = "powershell.exe";
+                startInfo.Arguments = "-NonInteractive -NoProfile -WindowStyle Hidden -EncodedCommand " + encodedCommand;
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+                Process.Start(startInfo);
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                Console.Error.WriteLine("[WARN] Toast notification failed — " + ex.Message);
+                Console.Error.WriteLine("[WARN] Toast notification failed - " + exception.Message);
             }
         }
 
-        private static string XmlEsc(string s)
+        private static string EscapeXml(string text)
         {
-            if (s == null) return string.Empty;
-            return s.Replace("&", "&amp;")
-                    .Replace("<", "&lt;")
-                    .Replace(">", "&gt;")
-                    .Replace("\"", "&quot;")
-                    .Replace("'", "&apos;");
+            if (text == null)
+            {
+                return string.Empty;
+            }
+
+            return text.Replace("&", "&amp;")
+                       .Replace("<", "&lt;")
+                       .Replace(">", "&gt;")
+                       .Replace("\"", "&quot;")
+                       .Replace("'", "&apos;");
         }
     }
 
     // -------------------------------------------------------------------------
-    // RemoteSessionHelper — detects SMB/network file access and enumerates
+    // RemoteSessionHelper - detects SMB/network file access and enumerates
     // active sessions via NetSessionEnum to capture the remote username and
     // source address.
     //
@@ -403,39 +433,54 @@ namespace Synthetic
                                         // fails or resolveRemoteIPs is false
         }
 
-        // SESSION_INFO_10 — x64 layout:
-        //   offset  0  LMSTR sesi10_cname     (8-byte pointer)
-        //   offset  8  LMSTR sesi10_username  (8-byte pointer)
-        //   offset 16  DWORD sesi10_time      (4 bytes)
-        //   offset 20  DWORD sesi10_idle_time (4 bytes)
-        [StructLayout(LayoutKind.Sequential)]
-        private struct SESSION_INFO_10
+        private static class NativeMethods
         {
-            public IntPtr ClientNamePtr;
-            public IntPtr UserNamePtr;
-            public uint   Time;
-            public uint   IdleTime;
+            // SESSION_INFO_10 - x64 layout:
+            //   offset  0  LMSTR sesi10_cname     (8-byte pointer)
+            //   offset  8  LMSTR sesi10_username  (8-byte pointer)
+            //   offset 16  DWORD sesi10_time      (4 bytes)
+            //   offset 20  DWORD sesi10_idle_time (4 bytes)
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            internal struct SESSION_INFO_10
+            {
+                internal IntPtr ClientName;
+                internal IntPtr UserName;
+                internal uint SecondsActive;
+                internal uint SecondsIdle;
+            }
+
+            internal const int NerrSuccess = 0;
+            internal const int ErrorMoreData = 234;
+            internal const int SessionInfoLevel10 = 10;
+            internal const int MaxPreferredLength = -1;
+
+            [DllImport("Netapi32.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+            internal static extern int NetSessionEnum(
+                string serverName,
+                string uncClientName,
+                string userName,
+                int level,
+                out IntPtr buffer,
+                int preferredMaximumLength,
+                out int entriesRead,
+                out int totalEntries,
+                ref int resumeHandle);
+
+            [DllImport("Netapi32.dll", ExactSpelling = true)]
+            internal static extern int NetApiBufferFree(IntPtr buffer);
         }
-
-        [DllImport("Netapi32.dll", CharSet = CharSet.Unicode)]
-        private static extern int NetSessionEnum(
-            string serverName, string uncClientName, string userName,
-            int level, out IntPtr bufPtr, int prefMaxLen,
-            out int entriesRead, out int totalEntries, ref int resumeHandle);
-
-        [DllImport("Netapi32.dll")]
-        private static extern int NetApiBufferFree(IntPtr buffer);
-
-        private const int ERROR_MORE_DATA = 234;
 
         // Returns true when the triggering process is likely the SMB kernel driver.
         // PID 4 = Windows System process; an empty image path also signals a
         // kernel-mode caller.
-        public static bool IsLikelyRemote(uint pid, string procName)
+        public static bool IsLikelyRemote(uint processId, string processName)
         {
-            if (pid == 4) return true;
-            if (string.IsNullOrEmpty(procName)) return true;
-            return false;
+            if (processId == 4)
+            {
+                return true;
+            }
+
+            return string.IsNullOrEmpty(processName);
         }
 
         // Enumerates active SMB sessions on this host.
@@ -449,117 +494,150 @@ namespace Synthetic
         // the app config contains unrecognised sections) never suppresses the
         // username and hostname that were already captured from the session buffer.
         //
-        // Duplicate sessions — Windows sometimes returns two entries for the same
+        // Duplicate sessions - Windows sometimes returns two entries for the same
         // connection with differing username casing (one for the negotiation phase,
         // one for the authenticated session).  A case-insensitive deduplication pass
         // collapses these before the list is returned.
         public static List<SessionInfo> GetActiveSessions()
         {
-            List<SessionInfo> result = new List<SessionInfo>();
-            IntPtr buf       = IntPtr.Zero;
+            List<SessionInfo> sessions = new List<SessionInfo>();
+            IntPtr sessionBuffer = IntPtr.Zero;
             int resumeHandle = 0;
 
             // ---- Phase 1: session enumeration (no DNS, no managed I/O) ----
             try
             {
-                int entriesRead, totalEntries;
-                int hr = NetSessionEnum(
-                    null, null, null, 10,
-                    out buf, -1,
-                    out entriesRead, out totalEntries,
+                int entriesRead;
+                int totalEntries;
+                int resultCode = NativeMethods.NetSessionEnum(
+                    null, null, null,
+                    NativeMethods.SessionInfoLevel10,
+                    out sessionBuffer,
+                    NativeMethods.MaxPreferredLength,
+                    out entriesRead,
+                    out totalEntries,
                     ref resumeHandle);
 
-                // hr == 0 is NERR_Success; 234 is ERROR_MORE_DATA (partial results).
-                // Both are usable — anything else indicates a real failure.
-                if (hr != 0 && hr != ERROR_MORE_DATA)
-                    return result;
-                if (buf == IntPtr.Zero || entriesRead == 0)
-                    return result;
-
-                int sz = Marshal.SizeOf(typeof(SESSION_INFO_10));
-                for (int i = 0; i < entriesRead; i++)
+                // NerrSuccess and ErrorMoreData (partial results) are both usable -
+                // anything else indicates a real failure.
+                if (resultCode != NativeMethods.NerrSuccess && resultCode != NativeMethods.ErrorMoreData)
                 {
-                    SESSION_INFO_10 s = (SESSION_INFO_10)Marshal.PtrToStructure(
-                        IntPtr.Add(buf, i * sz), typeof(SESSION_INFO_10));
+                    return sessions;
+                }
 
-                    string clientName = s.ClientNamePtr != IntPtr.Zero
-                        ? (Marshal.PtrToStringUni(s.ClientNamePtr) ?? string.Empty)
+                if (sessionBuffer == IntPtr.Zero || entriesRead == 0)
+                {
+                    return sessions;
+                }
+
+                int structSize = Marshal.SizeOf(typeof(NativeMethods.SESSION_INFO_10));
+                for (int entryIndex = 0; entryIndex < entriesRead; entryIndex++)
+                {
+                    NativeMethods.SESSION_INFO_10 nativeSession =
+                        (NativeMethods.SESSION_INFO_10)Marshal.PtrToStructure(
+                            IntPtr.Add(sessionBuffer, entryIndex * structSize),
+                            typeof(NativeMethods.SESSION_INFO_10));
+
+                    string clientName = nativeSession.ClientName != IntPtr.Zero
+                        ? (Marshal.PtrToStringUni(nativeSession.ClientName) ?? string.Empty)
                         : string.Empty;
-                    string userName = s.UserNamePtr != IntPtr.Zero
-                        ? (Marshal.PtrToStringUni(s.UserNamePtr) ?? string.Empty)
+                    string userName = nativeSession.UserName != IntPtr.Zero
+                        ? (Marshal.PtrToStringUni(nativeSession.UserName) ?? string.Empty)
                         : string.Empty;
 
                     // SMB reports the client as \\hostname; strip the leading backslashes.
-                    SessionInfo si = new SessionInfo();
-                    si.UserName   = userName;
-                    si.ClientName = clientName.TrimStart('\\');
-                    si.ClientIP   = string.Empty;
-                    result.Add(si);
+                    SessionInfo session = new SessionInfo();
+                    session.UserName = userName;
+                    session.ClientName = clientName.TrimStart('\\');
+                    session.ClientIP = string.Empty;
+                    sessions.Add(session);
                 }
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                Console.Error.WriteLine("[WARN] NetSessionEnum — " + ex.Message);
+                Console.Error.WriteLine("[WARN] NetSessionEnum - " + exception.Message);
             }
             finally
             {
-                if (buf != IntPtr.Zero)
-                    try { NetApiBufferFree(buf); } catch { }
+                if (sessionBuffer != IntPtr.Zero)
+                {
+                    try { NativeMethods.NetApiBufferFree(sessionBuffer); } catch { }
+                }
             }
 
             // ---- Phase 2: deduplication ----
             // Windows sometimes reports the same connection twice with differing
             // username casing (negotiation session vs. authenticated session).
             // Keep only the first occurrence of each username+hostname pair.
-            List<SessionInfo> deduped = new List<SessionInfo>();
-            foreach (SessionInfo si in result)
+            List<SessionInfo> dedupedSessions = new List<SessionInfo>();
+            foreach (SessionInfo candidate in sessions)
             {
-                bool seen = false;
-                foreach (SessionInfo existing in deduped)
+                bool alreadySeen = false;
+                foreach (SessionInfo existing in dedupedSessions)
                 {
-                    if (string.Equals(si.UserName,   existing.UserName,
-                                StringComparison.OrdinalIgnoreCase)
-                     && string.Equals(si.ClientName, existing.ClientName,
-                                StringComparison.OrdinalIgnoreCase))
+                    if (string.Equals(candidate.UserName, existing.UserName, StringComparison.OrdinalIgnoreCase)
+                        && string.Equals(candidate.ClientName, existing.ClientName, StringComparison.OrdinalIgnoreCase))
                     {
-                        seen = true;
+                        alreadySeen = true;
                         break;
                     }
                 }
-                if (!seen) deduped.Add(si);
-            }
-            result = deduped;
 
-            // ---- Phase 3: DNS resolution (isolated — failures never discard sessions) ----
+                if (!alreadySeen)
+                {
+                    dedupedSessions.Add(candidate);
+                }
+            }
+
+            sessions = dedupedSessions;
+
+            // ---- Phase 3: DNS resolution (isolated - failures never discard sessions) ----
             if (PhantomFSSettings.ResolveRemoteIPs)
             {
-                foreach (SessionInfo si in result)
+                foreach (SessionInfo session in sessions)
                 {
-                    try   { si.ClientIP = ResolveToIP(si.ClientName); }
-                    catch (Exception ex)
+                    try
                     {
-                        Console.Error.WriteLine("[WARN] DNS resolution failed — " + ex.Message);
+                        session.ClientIP = ResolveToIPAddress(session.ClientName);
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.Error.WriteLine("[WARN] DNS resolution failed - " + exception.Message);
                     }
                 }
             }
 
-            return result;
+            return sessions;
         }
 
         // Attempts to resolve a hostname to an IP address string.
         // Returns the input unchanged if it is already an IP, or an empty string
         // if DNS resolution fails.
-        private static string ResolveToIP(string hostName)
+        private static string ResolveToIPAddress(string hostName)
         {
-            if (string.IsNullOrEmpty(hostName)) return string.Empty;
-            IPAddress addr;
-            if (IPAddress.TryParse(hostName, out addr)) return hostName;
+            if (string.IsNullOrEmpty(hostName))
+            {
+                return string.Empty;
+            }
+
+            IPAddress parsedAddress;
+            if (IPAddress.TryParse(hostName, out parsedAddress))
+            {
+                return hostName;
+            }
+
             try
             {
-                IPAddress[] addrs = Dns.GetHostAddresses(hostName);
-                if (addrs.Length > 0) return addrs[0].ToString();
+                IPAddress[] resolvedAddresses = Dns.GetHostAddresses(hostName);
+                if (resolvedAddresses.Length > 0)
+                {
+                    return resolvedAddresses[0].ToString();
+                }
             }
-            catch { }
+            catch
+            {
+            }
+
             return string.Empty;
         }
 
@@ -567,24 +645,33 @@ namespace Synthetic
         // Returns an empty string when the list is null or empty.
         public static string FormatSessions(List<SessionInfo> sessions)
         {
-            if (sessions == null || sessions.Count == 0) return string.Empty;
-            StringBuilder sb = new StringBuilder();
-            foreach (SessionInfo s in sessions)
+            if (sessions == null || sessions.Count == 0)
             {
-                sb.Append("\r\nRemote  : ").Append(s.UserName);
-                if (!string.IsNullOrEmpty(s.ClientName))
-                    sb.Append(" @ ").Append(s.ClientName);
-                if (!string.IsNullOrEmpty(s.ClientIP)
-                    && !string.Equals(s.ClientIP, s.ClientName,
-                            StringComparison.OrdinalIgnoreCase))
-                    sb.Append("  [").Append(s.ClientIP).Append("]");
+                return string.Empty;
             }
-            return sb.ToString();
+
+            StringBuilder builder = new StringBuilder();
+            foreach (SessionInfo session in sessions)
+            {
+                builder.Append("\r\nRemote  : ").Append(session.UserName);
+                if (!string.IsNullOrEmpty(session.ClientName))
+                {
+                    builder.Append(" @ ").Append(session.ClientName);
+                }
+
+                if (!string.IsNullOrEmpty(session.ClientIP)
+                    && !string.Equals(session.ClientIP, session.ClientName, StringComparison.OrdinalIgnoreCase))
+                {
+                    builder.Append("  [").Append(session.ClientIP).Append("]");
+                }
+            }
+
+            return builder.ToString();
         }
     }
 
     // -------------------------------------------------------------------------
-    // SyntheticEntry — one parsed row from <syntheticFileList>.
+    // SyntheticEntry - one parsed row from <syntheticFileList>.
     // RelativePath uses backslash separators with no leading backslash.
     // -------------------------------------------------------------------------
     internal sealed class SyntheticEntry
@@ -592,34 +679,37 @@ namespace Synthetic
         public string RelativePath;   // "AWS\credentials"
         public string Name;           // "credentials"
         public string ParentPath;     // "AWS"  (empty = root)
-        public bool   IsDirectory;
-        public long   FileSize;
-        public long   UnixTimestamp;
+        public bool IsDirectory;
+        public long FileSize;
+        public long UnixTimestamp;
 
         public long GetFiletime()
         {
-            DateTime epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
-            return epoch.AddSeconds((double)UnixTimestamp).ToFileTime();
+            DateTime unixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            return unixEpoch.AddSeconds((double)UnixTimestamp).ToFileTime();
         }
     }
 
     // -------------------------------------------------------------------------
-    // SyntheticData — loads and indexes the virtual file tree from the config.
+    // SyntheticData - loads and indexes the virtual file tree from the config.
     //
     // Line format:  \Path\To\Entry,isDirectory,fileSize,unixTimestamp
     // -------------------------------------------------------------------------
     internal sealed class SyntheticData
     {
-        private readonly Dictionary<string, SyntheticEntry>       _byPath;
-        private readonly Dictionary<string, List<SyntheticEntry>> _byParent;
+        private readonly Dictionary<string, SyntheticEntry> _entriesByPath;
+        private readonly Dictionary<string, List<SyntheticEntry>> _entriesByParent;
 
         private SyntheticData()
         {
-            _byPath   = new Dictionary<string, SyntheticEntry>(StringComparer.OrdinalIgnoreCase);
-            _byParent = new Dictionary<string, List<SyntheticEntry>>(StringComparer.OrdinalIgnoreCase);
+            _entriesByPath = new Dictionary<string, SyntheticEntry>(StringComparer.OrdinalIgnoreCase);
+            _entriesByParent = new Dictionary<string, List<SyntheticEntry>>(StringComparer.OrdinalIgnoreCase);
         }
 
-        public int EntryCount { get { return _byPath.Count; } }
+        public int EntryCount
+        {
+            get { return _entriesByPath.Count; }
+        }
 
         public static SyntheticData LoadFromConfig(string configPath)
         {
@@ -628,30 +718,31 @@ namespace Synthetic
                 Console.Error.WriteLine("[WARN] Config not found: " + configPath);
                 return null;
             }
+
             try
             {
-                XmlDocument doc = new XmlDocument();
-                doc.Load(configPath);
+                XmlDocument configDocument = new XmlDocument();
+                configDocument.Load(configPath);
 
-                XmlNode node = doc.SelectSingleNode("/configuration/syntheticFileList");
-                if (node == null)
+                XmlNode fileListNode = configDocument.SelectSingleNode("/configuration/syntheticFileList");
+                if (fileListNode == null)
                 {
                     Console.Error.WriteLine("[WARN] No <syntheticFileList> in config.");
                     return null;
                 }
 
-                string raw = node.InnerText;
-                if (string.IsNullOrEmpty(raw.Trim()))
+                string rawFileList = fileListNode.InnerText;
+                if (string.IsNullOrEmpty(rawFileList.Trim()))
                 {
                     Console.Error.WriteLine("[WARN] <syntheticFileList> is empty.");
                     return null;
                 }
 
-                return ParseLines(raw.Split(new char[] { '\r', '\n' }, StringSplitOptions.None));
+                return ParseLines(rawFileList.Split(new char[] { '\r', '\n' }, StringSplitOptions.None));
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                Console.Error.WriteLine("[WARN] Could not load file list — " + ex.Message);
+                Console.Error.WriteLine("[WARN] Could not load file list - " + exception.Message);
                 return null;
             }
         }
@@ -661,263 +752,407 @@ namespace Synthetic
             SyntheticData data = new SyntheticData();
             foreach (string line in lines)
             {
-                string t = line.Trim();
-                if (string.IsNullOrEmpty(t) || t.StartsWith("#")) continue;
+                string trimmedLine = line.Trim();
+                if (string.IsNullOrEmpty(trimmedLine) || trimmedLine.StartsWith("#"))
+                {
+                    continue;
+                }
 
-                string[] parts = t.Split(',');
-                if (parts.Length < 4) continue;
+                string[] fields = trimmedLine.Split(',');
+                if (fields.Length < 4)
+                {
+                    continue;
+                }
 
-                bool isDir; long sz; long ts;
-                if (!bool.TryParse(parts[1].Trim(), out isDir)) continue;
-                if (!long.TryParse(parts[2].Trim(), out sz))    continue;
-                if (!long.TryParse(parts[3].Trim(), out ts))    continue;
+                bool isDirectory;
+                long fileSize;
+                long unixTimestamp;
+                if (!bool.TryParse(fields[1].Trim(), out isDirectory))
+                {
+                    continue;
+                }
 
-                string np = parts[0].Trim().TrimStart('\\');
+                if (!long.TryParse(fields[2].Trim(), out fileSize))
+                {
+                    continue;
+                }
 
-                SyntheticEntry e = new SyntheticEntry();
-                e.RelativePath  = np;
-                e.IsDirectory   = isDir;
-                e.FileSize      = sz;
-                e.UnixTimestamp = ts;
+                if (!long.TryParse(fields[3].Trim(), out unixTimestamp))
+                {
+                    continue;
+                }
 
-                int sl = np.LastIndexOf('\\');
-                if (sl >= 0) { e.Name = np.Substring(sl + 1); e.ParentPath = np.Substring(0, sl); }
-                else         { e.Name = np; e.ParentPath = string.Empty; }
+                string normalizedPath = fields[0].Trim().TrimStart('\\');
 
-                data._byPath[np] = e;
+                SyntheticEntry entry = new SyntheticEntry();
+                entry.RelativePath = normalizedPath;
+                entry.IsDirectory = isDirectory;
+                entry.FileSize = fileSize;
+                entry.UnixTimestamp = unixTimestamp;
+
+                int lastSeparatorIndex = normalizedPath.LastIndexOf('\\');
+                if (lastSeparatorIndex >= 0)
+                {
+                    entry.Name = normalizedPath.Substring(lastSeparatorIndex + 1);
+                    entry.ParentPath = normalizedPath.Substring(0, lastSeparatorIndex);
+                }
+                else
+                {
+                    entry.Name = normalizedPath;
+                    entry.ParentPath = string.Empty;
+                }
+
+                data._entriesByPath[normalizedPath] = entry;
 
                 List<SyntheticEntry> siblings;
-                if (!data._byParent.TryGetValue(e.ParentPath, out siblings))
-                { siblings = new List<SyntheticEntry>(); data._byParent[e.ParentPath] = siblings; }
-                siblings.Add(e);
+                if (!data._entriesByParent.TryGetValue(entry.ParentPath, out siblings))
+                {
+                    siblings = new List<SyntheticEntry>();
+                    data._entriesByParent[entry.ParentPath] = siblings;
+                }
+
+                siblings.Add(entry);
             }
+
             return data;
         }
 
         public SyntheticEntry Find(string relativePath)
         {
-            if (relativePath == null) relativePath = string.Empty;
-            SyntheticEntry e;
-            return _byPath.TryGetValue(relativePath, out e) ? e : null;
+            if (relativePath == null)
+            {
+                relativePath = string.Empty;
+            }
+
+            SyntheticEntry entry;
+            return _entriesByPath.TryGetValue(relativePath, out entry) ? entry : null;
         }
 
-        public List<SyntheticEntry> GetChildren(string parent)
+        public List<SyntheticEntry> GetChildren(string parentPath)
         {
-            if (parent == null) parent = string.Empty;
-            List<SyntheticEntry> r;
-            return _byParent.TryGetValue(parent, out r) ? r : new List<SyntheticEntry>();
+            if (parentPath == null)
+            {
+                parentPath = string.Empty;
+            }
+
+            List<SyntheticEntry> children;
+            return _entriesByParent.TryGetValue(parentPath, out children) ? children : new List<SyntheticEntry>();
         }
     }
 
     // -------------------------------------------------------------------------
-    // SyntheticContent — generates plausible file content for synthetic entries.
+    // SyntheticContent - generates plausible file content for synthetic entries.
     //
     // Template types (set via type= attribute on <template> elements):
-    //   type="pem"   — deterministic LCG-generated PEM block sized to fileSize
-    //   (CDATA text) — static text, padded/trimmed to match fileSize
+    //   type="pem"   - deterministic LCG-generated PEM block sized to fileSize
+    //   (CDATA text) - static text, padded/trimmed to match fileSize
     //
-    // Match order:  exact filename match \u2192 file extension \u2192 built-in fallback
+    // Match order:  exact filename match, then file extension, then built-in fallback
     // -------------------------------------------------------------------------
     internal static class SyntheticContent
     {
         private sealed class TemplateEntry
         {
-            public bool   IsPem;
+            public bool IsPem;
             public string PemLabel;
             public string Text;
         }
 
-        private static Dictionary<string, TemplateEntry> _exact;
-        private static Dictionary<string, TemplateEntry> _ext;
+        private static Dictionary<string, TemplateEntry> _templatesByFileName;
+        private static Dictionary<string, TemplateEntry> _templatesByExtension;
 
         public static void LoadFromConfig(string configPath)
         {
-            _exact = new Dictionary<string, TemplateEntry>(StringComparer.OrdinalIgnoreCase);
-            _ext   = new Dictionary<string, TemplateEntry>(StringComparer.OrdinalIgnoreCase);
+            _templatesByFileName = new Dictionary<string, TemplateEntry>(StringComparer.OrdinalIgnoreCase);
+            _templatesByExtension = new Dictionary<string, TemplateEntry>(StringComparer.OrdinalIgnoreCase);
 
             if (!File.Exists(configPath))
             {
-                Console.WriteLine("[INFO] Config not found — synthetic files will return generic text.");
+                Console.WriteLine("[INFO] Config not found - synthetic files will return generic text.");
                 return;
             }
 
-            int count = 0;
+            int templateCount = 0;
             try
             {
-                XmlDocument doc = new XmlDocument();
-                doc.Load(configPath);
+                XmlDocument configDocument = new XmlDocument();
+                configDocument.Load(configPath);
 
-                XmlNodeList nodes = doc.SelectNodes("/configuration/syntheticTemplates/template");
-                if (nodes == null) { Console.WriteLine("[INFO] No <syntheticTemplates> found."); return; }
-
-                foreach (XmlNode node in nodes)
+                XmlNodeList templateNodes = configDocument.SelectNodes("/configuration/syntheticTemplates/template");
+                if (templateNodes == null)
                 {
-                    string nv  = Attr(node, "name");
-                    string ev  = Attr(node, "extension");
-                    string tv  = Attr(node, "type");
-                    string pv  = Attr(node, "pemLabel");
-                    bool   pem = string.Equals(tv, "pem", StringComparison.OrdinalIgnoreCase);
+                    Console.WriteLine("[INFO] No <syntheticTemplates> found.");
+                    return;
+                }
 
-                    TemplateEntry te = new TemplateEntry();
-                    te.IsPem    = pem;
-                    te.PemLabel = pem && pv != null ? pv : "PRIVATE KEY";
-                    te.Text     = pem ? null : (node.InnerText.Trim() + "\n");
+                foreach (XmlNode templateNode in templateNodes)
+                {
+                    string nameAttribute = ReadAttribute(templateNode, "name");
+                    string extensionAttribute = ReadAttribute(templateNode, "extension");
+                    string typeAttribute = ReadAttribute(templateNode, "type");
+                    string pemLabelAttribute = ReadAttribute(templateNode, "pemLabel");
+                    bool isPem = string.Equals(typeAttribute, "pem", StringComparison.OrdinalIgnoreCase);
 
-                    if      (nv != null) { _exact[nv.ToLowerInvariant()] = te; count++; }
-                    else if (ev != null) { _ext  [ev.ToLowerInvariant()] = te; count++; }
+                    TemplateEntry template = new TemplateEntry();
+                    template.IsPem = isPem;
+                    template.PemLabel = isPem && pemLabelAttribute != null ? pemLabelAttribute : "PRIVATE KEY";
+                    template.Text = isPem ? null : (templateNode.InnerText.Trim() + "\n");
+
+                    if (nameAttribute != null)
+                    {
+                        _templatesByFileName[nameAttribute.ToLowerInvariant()] = template;
+                        templateCount++;
+                    }
+                    else if (extensionAttribute != null)
+                    {
+                        _templatesByExtension[extensionAttribute.ToLowerInvariant()] = template;
+                        templateCount++;
+                    }
                 }
             }
-            catch (Exception ex)
+            catch (Exception exception)
             {
-                Console.Error.WriteLine("[WARN] Could not load templates — " + ex.Message);
+                Console.Error.WriteLine("[WARN] Could not load templates - " + exception.Message);
                 return;
             }
-            Console.WriteLine("  Loaded " + count + " content templates from config.");
+
+            Console.WriteLine("  Loaded " + templateCount + " content templates from config.");
         }
 
         public static byte[] Generate(string fileName, long declaredSize)
         {
-            string lower = fileName.ToLowerInvariant();
-            string text  = Resolve(lower, declaredSize);
-            return FitToSize(Encoding.UTF8.GetBytes(text), declaredSize);
+            string lowerFileName = fileName.ToLowerInvariant();
+            string content = Resolve(lowerFileName, declaredSize);
+            return FitToSize(Encoding.UTF8.GetBytes(content), declaredSize);
         }
 
-        private static string Resolve(string lower, long size)
+        private static string Resolve(string lowerFileName, long declaredSize)
         {
-            TemplateEntry te;
-            if (_exact != null && _exact.TryGetValue(lower, out te)) return Produce(te, size);
-            string ext = Path.GetExtension(lower);
-            if (!string.IsNullOrEmpty(ext) && _ext != null && _ext.TryGetValue(ext, out te)) return Produce(te, size);
-            return "# " + lower + "\n# Synthetic honeypot file — add a <template> to PhantomFS.exe.config\n";
-        }
-
-        private static string Produce(TemplateEntry te, long size)
-        {
-            return te.IsPem ? PemBlock(te.PemLabel, size) : (te.Text ?? string.Empty);
-        }
-
-        private static string PemBlock(string label, long targetSize)
-        {
-            string hdr  = "-----BEGIN " + label + "-----\n";
-            string ftr  = "\n-----END " + label + "-----\n";
-            int    body = (int)targetSize - hdr.Length - ftr.Length;
-            if (body < 64) body = 64;
-            return hdr + FakeBase64(body) + ftr;
-        }
-
-        private static string FakeBase64(int approxLen)
-        {
-            const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-            int state = unchecked(0x12345678);
-            StringBuilder sb = new StringBuilder(approxLen + 80);
-            int col = 0;
-            while (sb.Length < approxLen)
+            TemplateEntry template;
+            if (_templatesByFileName != null && _templatesByFileName.TryGetValue(lowerFileName, out template))
             {
-                state = unchecked(state * 1664525 + 1013904223);
-                sb.Append(chars[((state >> 8) & 0x7FFFFFFF) % 64]);
-                if (++col == 64) { sb.Append('\n'); col = 0; }
+                return Produce(template, declaredSize);
             }
-            if (col > 0) sb.Append('\n');
-            return sb.ToString();
+
+            string extension = Path.GetExtension(lowerFileName);
+            if (!string.IsNullOrEmpty(extension)
+                && _templatesByExtension != null
+                && _templatesByExtension.TryGetValue(extension, out template))
+            {
+                return Produce(template, declaredSize);
+            }
+
+            return "# " + lowerFileName + "\n# Synthetic honeypot file - add a <template> to PhantomFS.exe.config\n";
         }
 
-        private static byte[] FitToSize(byte[] raw, long size)
+        private static string Produce(TemplateEntry template, long declaredSize)
         {
-            if (size <= 0) return new byte[0];
-            byte[] r = new byte[(int)size];
-            if (raw.Length >= (int)size) { Array.Copy(raw, r, (int)size); }
-            else { Array.Copy(raw, r, raw.Length); for (int i = raw.Length; i < (int)size; i++) r[i] = (byte)'\n'; }
-            return r;
+            return template.IsPem
+                ? BuildPemBlock(template.PemLabel, declaredSize)
+                : (template.Text ?? string.Empty);
         }
 
-        private static string Attr(XmlNode n, string name)
+        private static string BuildPemBlock(string label, long targetSize)
         {
-            if (n.Attributes == null) return null;
-            XmlAttribute a = n.Attributes[name];
-            return a != null ? a.Value : null;
+            string header = "-----BEGIN " + label + "-----\n";
+            string footer = "\n-----END " + label + "-----\n";
+            int bodyLength = (int)targetSize - header.Length - footer.Length;
+            if (bodyLength < 64)
+            {
+                bodyLength = 64;
+            }
+
+            return header + GenerateFakeBase64(bodyLength) + footer;
+        }
+
+        private static string GenerateFakeBase64(int approximateLength)
+        {
+            const string Base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            int generatorState = unchecked(0x12345678);
+            StringBuilder builder = new StringBuilder(approximateLength + 80);
+            int columnIndex = 0;
+            while (builder.Length < approximateLength)
+            {
+                generatorState = unchecked(generatorState * 1664525 + 1013904223);
+                builder.Append(Base64Alphabet[((generatorState >> 8) & 0x7FFFFFFF) % 64]);
+                if (++columnIndex == 64)
+                {
+                    builder.Append('\n');
+                    columnIndex = 0;
+                }
+            }
+
+            if (columnIndex > 0)
+            {
+                builder.Append('\n');
+            }
+
+            return builder.ToString();
+        }
+
+        private static byte[] FitToSize(byte[] rawContent, long targetSize)
+        {
+            if (targetSize <= 0)
+            {
+                return new byte[0];
+            }
+
+            byte[] result = new byte[(int)targetSize];
+            if (rawContent.Length >= (int)targetSize)
+            {
+                Array.Copy(rawContent, result, (int)targetSize);
+            }
+            else
+            {
+                Array.Copy(rawContent, result, rawContent.Length);
+                for (int paddingIndex = rawContent.Length; paddingIndex < (int)targetSize; paddingIndex++)
+                {
+                    result[paddingIndex] = (byte)'\n';
+                }
+            }
+
+            return result;
+        }
+
+        private static string ReadAttribute(XmlNode node, string attributeName)
+        {
+            if (node.Attributes == null)
+            {
+                return null;
+            }
+
+            XmlAttribute attribute = node.Attributes[attributeName];
+            return attribute != null ? attribute.Value : null;
         }
     }
 }
 
 // =============================================================================
-// Unified directory-listing entry — shared between PhantomFSProvider
+// Unified directory-listing entry - shared between PhantomFSProvider
 // and EnumerationSession (both at the global namespace level).
 // =============================================================================
 
 internal struct DirEntry
 {
     public string Name;
-    public bool   IsSynthetic;
-    public bool   IsDirectory;
-    public long   FileSize;
-    public long   CreationTimeFt;
-    public long   LastAccessTimeFt;
-    public long   LastWriteTimeFt;
-    public uint   FileAttributes;
+    public bool IsSynthetic;
+    public bool IsDirectory;
+    public long FileSize;
+    public long CreationTimeFiletime;
+    public long LastAccessTimeFiletime;
+    public long LastWriteTimeFiletime;
+    public uint FileAttributes;
 }
 
 // =============================================================================
-// EnumerationSession — tracks the cursor for a single directory enumeration.
+// EnumerationSession - tracks the cursor for a single directory enumeration.
 // =============================================================================
 
 internal sealed class EnumerationSession
 {
     private readonly DirEntry[] _entries;
-    private int _index;
+    private int _currentIndex;
 
     public EnumerationSession(DirEntry[] entries)
     {
         _entries = entries;
-        _index   = 0;
+        _currentIndex = 0;
     }
 
-    public void Reset()    { _index = 0; }
-    public void StepBack() { if (_index > 0) _index--; }
+    public void Reset()
+    {
+        _currentIndex = 0;
+    }
+
+    public void StepBack()
+    {
+        if (_currentIndex > 0)
+        {
+            _currentIndex--;
+        }
+    }
 
     public bool TryGetNext(out DirEntry entry)
     {
-        if (_index < _entries.Length) { entry = _entries[_index++]; return true; }
+        if (_currentIndex < _entries.Length)
+        {
+            entry = _entries[_currentIndex++];
+            return true;
+        }
+
         entry = default(DirEntry);
         return false;
     }
 }
 
 // =============================================================================
-// P/Invoke layer — ProjectedFSLib.dll
+// P/Invoke layer - ProjectedFSLib.dll
+//
+// All native structures are declared with explicit layouts that match the
+// x64 headers, and callback data is marshaled through a typed
+// PRJ_CALLBACK_DATA struct rather than raw pointer-offset arithmetic.
 // =============================================================================
 
-internal static class Prj
+internal static class ProjectedFileSystemNative
 {
-    public const int S_OK                   =  0;
-    public const int E_FAIL                 = unchecked((int)0x80004005);
-    public const int HR_INSUFFICIENT_BUFFER = unchecked((int)0x8007007A);
-    public const int HR_FILE_NOT_FOUND      = unchecked((int)0x80070002);
-    public const int HR_PATH_NOT_FOUND      = unchecked((int)0x80070003);
-    public const int HR_NOT_A_REPARSE_POINT = unchecked((int)0x80071126);
+    // ---- HRESULT values ----
 
-    public const int FLAG_ENUM_RESTART_SCAN = 0x00000001;
+    public const int HResultOk = 0;
+    public const int HResultFail = unchecked((int)0x80004005);
+    public const int HResultInsufficientBuffer = unchecked((int)0x8007007A);
+    public const int HResultFileNotFound = unchecked((int)0x80070002);
+    public const int HResultPathNotFound = unchecked((int)0x80070003);
+    public const int HResultNotAReparsePoint = unchecked((int)0x80071126);
+
+    // ---- PRJ_CALLBACK_DATA_FLAGS ----
+
+    public const int CallbackDataFlagEnumRestartScan = 0x00000001;
+
+    // ---- PRJ_UPDATE_TYPES flags ----
+    // Passed to PrjDeleteFile / PrjUpdateFileIfNeeded to authorize acting on a
+    // placeholder that has diverged from its virtual state.
+    // DirtyMetadata = timestamps/attributes touched since the placeholder was created.
+    // DirtyData     = the file's data stream was hydrated (read/cached) or modified.
+    // Tombstone     = the path currently carries a deletion tombstone.
+    // ReadOnly      = the file carries the read-only attribute.
+
+    public const uint UpdateAllowDirtyMetadata = 0x00000001;
+    public const uint UpdateAllowDirtyData = 0x00000002;
+    public const uint UpdateAllowTombstone = 0x00000004;
+    public const uint UpdateAllowReadOnly = 0x00000008;
+
+    // ---- Callback delegates ----
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    public delegate int StartDirEnumCb(IntPtr cbd, IntPtr enumId);
+    public delegate int StartDirectoryEnumerationCallback(
+        ref CallbackData callbackData, ref Guid enumerationId);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    public delegate int EndDirEnumCb(IntPtr cbd, IntPtr enumId);
+    public delegate int EndDirectoryEnumerationCallback(
+        ref CallbackData callbackData, ref Guid enumerationId);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    public delegate int GetDirEnumCb(IntPtr cbd, IntPtr enumId, IntPtr searchExpr, IntPtr dirBuf);
+    public delegate int GetDirectoryEnumerationCallback(
+        ref CallbackData callbackData, ref Guid enumerationId,
+        [MarshalAs(UnmanagedType.LPWStr)] string searchExpression,
+        IntPtr dirEntryBufferHandle);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    public delegate int GetPlaceholderInfoCb(IntPtr cbd);
+    public delegate int GetPlaceholderInfoCallback(ref CallbackData callbackData);
 
     [UnmanagedFunctionPointer(CallingConvention.Winapi)]
-    public delegate int GetFileDataCb(IntPtr cbd, ulong byteOffset, uint length);
+    public delegate int GetFileDataCallback(
+        ref CallbackData callbackData, ulong byteOffset, uint length);
 
+    // ---- Native structures ----
+
+    // PRJ_CALLBACKS - pointer table registered with PrjStartVirtualizing.
     [StructLayout(LayoutKind.Sequential)]
-    public struct Callbacks
+    public struct CallbackTable
     {
-        public IntPtr StartDirEnum;
-        public IntPtr EndDirEnum;
-        public IntPtr GetDirEnum;
+        public IntPtr StartDirectoryEnumeration;
+        public IntPtr EndDirectoryEnumeration;
+        public IntPtr GetDirectoryEnumeration;
         public IntPtr GetPlaceholderInfo;
         public IntPtr GetFileData;
         public IntPtr QueryFileName;
@@ -925,12 +1160,42 @@ internal static class Prj
         public IntPtr CancelCommand;
     }
 
-    // PRJ_FILE_BASIC_INFO — MSVC x64 layout (56 bytes)
+    // PRJ_CALLBACK_DATA - x64 layout (explicit offsets; the two GUIDs are not
+    // naturally 8-byte aligned, so Sequential layout would mis-place the
+    // pointer fields that follow them).
+    [StructLayout(LayoutKind.Explicit)]
+    public struct CallbackData
+    {
+        [FieldOffset(0)]  public uint Size;
+        [FieldOffset(4)]  public uint Flags;
+        [FieldOffset(8)]  public IntPtr NamespaceVirtualizationContext;
+        [FieldOffset(16)] public int CommandId;
+        [FieldOffset(20)] public Guid FileId;
+        [FieldOffset(36)] public Guid DataStreamId;
+        [FieldOffset(56)] public IntPtr FilePathNamePtr;
+        [FieldOffset(64)] public IntPtr VersionInfo;
+        [FieldOffset(72)] public uint TriggeringProcessId;
+        [FieldOffset(80)] public IntPtr TriggeringProcessImageFileNamePtr;
+        [FieldOffset(88)] public IntPtr InstanceContext;
+
+        public string FilePathName
+        {
+            get { return ReadWideString(FilePathNamePtr); }
+        }
+
+        public string TriggeringProcessImageFileName
+        {
+            get { return ReadWideString(TriggeringProcessImageFileNamePtr); }
+        }
+    }
+
+    // PRJ_FILE_BASIC_INFO - MSVC x64 layout (56 bytes; the bool at offset 0 is
+    // padded to 8 bytes before the LARGE_INTEGER fields).
     [StructLayout(LayoutKind.Explicit, Size = 56)]
     public struct FileBasicInfo
     {
-        [FieldOffset( 0)] public byte IsDirectory;
-        [FieldOffset( 8)] public long FileSize;
+        [FieldOffset(0)]  public byte IsDirectory;
+        [FieldOffset(8)]  public long FileSize;
         [FieldOffset(16)] public long CreationTime;
         [FieldOffset(24)] public long LastAccessTime;
         [FieldOffset(32)] public long LastWriteTime;
@@ -938,123 +1203,140 @@ internal static class Prj
         [FieldOffset(48)] public uint FileAttributes;
     }
 
-    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    // PRJ_PLACEHOLDER_INFO - 344 bytes.  Only the leading FileBasicInfo block
+    // is populated; the EA, security, streams, and version regions remain
+    // zeroed, which ProjFS treats as "not supplied".
+    [StructLayout(LayoutKind.Explicit, Size = 344)]
+    public struct PlaceholderInfo
+    {
+        [FieldOffset(0)] public FileBasicInfo FileBasicInfo;
+    }
+
+    // ---- P/Invoke declarations ----
+
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     public static extern int PrjStartVirtualizing(
-        string rootPath, ref Callbacks callbacks,
-        IntPtr instanceContext, IntPtr options, out IntPtr virtCtx);
+        string virtualizationRootPath,
+        ref CallbackTable callbacks,
+        IntPtr instanceContext,
+        IntPtr options,
+        out IntPtr namespaceVirtualizationContext);
 
-    [DllImport("ProjectedFSLib.dll")]
-    public static extern void PrjStopVirtualizing(IntPtr virtCtx);
+    [DllImport("ProjectedFSLib.dll", ExactSpelling = true)]
+    public static extern void PrjStopVirtualizing(IntPtr namespaceVirtualizationContext);
 
-    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     public static extern int PrjMarkDirectoryAsPlaceholder(
-        string rootPathName, string targetPathName,
-        IntPtr versionInfo, ref Guid virtualizationInstanceID);
+        string rootPathName,
+        string targetPathName,
+        IntPtr versionInfo,
+        ref Guid virtualizationInstanceId);
 
-    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     public static extern int PrjWritePlaceholderInfo(
-        IntPtr virtCtx, string destFileName,
-        [In] byte[] placeholderInfo, uint placeholderInfoSize);
+        IntPtr namespaceVirtualizationContext,
+        string destinationFileName,
+        ref PlaceholderInfo placeholderInfo,
+        uint placeholderInfoSize);
 
-    [DllImport("ProjectedFSLib.dll")]
+    [DllImport("ProjectedFSLib.dll", ExactSpelling = true)]
     public static extern int PrjWriteFileData(
-        IntPtr virtCtx, ref Guid dataStreamId,
-        IntPtr buffer, ulong byteOffset, uint length);
+        IntPtr namespaceVirtualizationContext,
+        ref Guid dataStreamId,
+        IntPtr buffer,
+        ulong byteOffset,
+        uint length);
 
-    [DllImport("ProjectedFSLib.dll")]
-    public static extern IntPtr PrjAllocateAlignedBuffer(IntPtr virtCtx, UIntPtr size);
+    [DllImport("ProjectedFSLib.dll", ExactSpelling = true)]
+    public static extern IntPtr PrjAllocateAlignedBuffer(
+        IntPtr namespaceVirtualizationContext, UIntPtr size);
 
-    [DllImport("ProjectedFSLib.dll")]
+    [DllImport("ProjectedFSLib.dll", ExactSpelling = true)]
     public static extern void PrjFreeAlignedBuffer(IntPtr buffer);
 
-    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     public static extern int PrjFillDirEntryBuffer(
-        string fileName, ref FileBasicInfo info, IntPtr dirBuf);
+        string fileName, ref FileBasicInfo fileBasicInfo, IntPtr dirEntryBufferHandle);
 
-    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool PrjFileNameMatch(string fileName, string pattern);
+    public static extern bool PrjFileNameMatch(string fileNameToCheck, string pattern);
 
-    // PRJ_UPDATE_TYPES flags — passed to PrjUpdateFileIfNeeded.
-    // Dirty = modified by a caller since the placeholder was created.
-    // Tombstone = the path was deleted; update converts it back to a placeholder.
-    public const uint PRJ_UPDATE_ALLOW_DIRTY_METADATA = 0x00000001;
-    public const uint PRJ_UPDATE_ALLOW_DIRTY_DATA     = 0x00000002;
-    public const uint PRJ_UPDATE_ALLOW_TOMBSTONE      = 0x00000004;
-    public const uint PRJ_UPDATE_ALLOW_READ_ONLY      = 0x00000008;
+    // Discards the on-disk representation of a placeholder and returns the path
+    // to a pure virtual entry. Despite the name, when the destination is a
+    // placeholder (not a full file) this de-hydrates it: the cached data stream
+    // is dropped WITHOUT creating a tombstone, so the entry stays visible in the
+    // virtual directory and the next open re-triggers GetPlaceholderInfo and the
+    // next read re-triggers GetFileData (and therefore a fresh alert).
+    //
+    // This is the correct primitive for reverting a read honeypot file.
+    // PrjUpdateFileIfNeeded only rewrites placeholder metadata and can leave an
+    // already-hydrated data stream in place, so a subsequent read is served from
+    // the ProjFS cache without a callback.
+    //
+    // updateFlags authorizes acting on a placeholder that has diverged from its
+    // virtual state (dirty data/metadata, tombstone, read-only). failureReason
+    // receives a PRJ_UPDATE_FAILURE_CAUSES bitmask when the call returns a
+    // failure HRESULT because the divergence was not authorized.
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    public static extern int PrjDeleteFile(
+        IntPtr namespaceVirtualizationContext,
+        string destinationFileName,
+        uint updateFlags,
+        out uint failureReason);
 
-    // Reverts a hydrated or tombstoned placeholder back to an unhydrated state.
-    // Unlike File.Delete, this does NOT create a tombstone — the file remains
-    // visible in the virtual directory and the next read re-triggers GetFileData.
-    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode)]
+    // Rewrites the metadata of an existing placeholder. Retained for reference;
+    // NOT used for de-hydration because it does not reliably drop a hydrated
+    // data stream (see PrjDeleteFile above).
+    [DllImport("ProjectedFSLib.dll", CharSet = CharSet.Unicode, ExactSpelling = true)]
     public static extern int PrjUpdateFileIfNeeded(
         IntPtr namespaceVirtualizationContext,
         string destinationFileName,
-        [In] byte[] placeholderInfo,
+        ref PlaceholderInfo placeholderInfo,
         uint placeholderInfoSize,
         uint updateFlags,
         out uint failureReason);
 
-    // PRJ_CALLBACK_DATA field offsets (x64 layout)
-    public static int    CbdFlags    (IntPtr c) { return Marshal.ReadInt32(c,  4); }
-    public static IntPtr CbdVirtCtx  (IntPtr c) { return Marshal.ReadIntPtr(c, 8); }
-    public static string CbdFilePath (IntPtr c) { return PcwstrAt(c, 56); }
-    public static uint   CbdTrigPid  (IntPtr c) { return (uint)Marshal.ReadInt32(c, 72); }
-    public static string CbdTrigProc (IntPtr c) { return PcwstrAt(c, 80); }
+    // ---- Helpers ----
 
-    public static Guid CbdDataStreamId(IntPtr c)
+    public static PlaceholderInfo BuildPlaceholderInfo(
+        bool isDirectory, long fileSize,
+        long creationTime, long lastAccessTime, long lastWriteTime, long changeTime,
+        uint fileAttributes)
     {
-        return (Guid)Marshal.PtrToStructure(IntPtr.Add(c, 36), typeof(Guid));
+        PlaceholderInfo info = new PlaceholderInfo();
+        info.FileBasicInfo.IsDirectory = isDirectory ? (byte)1 : (byte)0;
+        info.FileBasicInfo.FileSize = isDirectory ? 0L : fileSize;
+        info.FileBasicInfo.CreationTime = creationTime;
+        info.FileBasicInfo.LastAccessTime = lastAccessTime;
+        info.FileBasicInfo.LastWriteTime = lastWriteTime;
+        info.FileBasicInfo.ChangeTime = changeTime;
+        info.FileBasicInfo.FileAttributes = fileAttributes;
+        return info;
     }
 
-    public static Guid ReadGuid(IntPtr p)
+    public static uint PlaceholderInfoSize
     {
-        return (Guid)Marshal.PtrToStructure(p, typeof(Guid));
+        get { return (uint)Marshal.SizeOf(typeof(PlaceholderInfo)); }
     }
 
-    public static string ReadPcwstr(IntPtr p)
+    public static string ReadWideString(IntPtr pointer)
     {
-        return p == IntPtr.Zero ? null : Marshal.PtrToStringUni(p);
+        return pointer == IntPtr.Zero ? null : Marshal.PtrToStringUni(pointer);
     }
 
-    // PRJ_PLACEHOLDER_INFO — 344 bytes
-    public static byte[] BuildPlaceholderInfo(
-        bool isDir, long size,
-        long createdFt, long accessFt, long writeFt, long changeFt,
-        uint attrs)
+    public static string DescribeHResult(int hresult)
     {
-        byte[] b = new byte[344];
-        b[0] = isDir ? (byte)1 : (byte)0;
-        Wi64(b,  8, isDir ? 0L : size);
-        Wi64(b, 16, createdFt);
-        Wi64(b, 24, accessFt);
-        Wi64(b, 32, writeFt);
-        Wi64(b, 40, changeFt);
-        Wu32(b, 48, attrs);
-        return b;
-    }
-
-    private static void Wi64(byte[] b, int o, long v) { ulong u=(ulong)v; for(int i=0;i<8;i++) b[o+i]=(byte)(u>>(i*8)); }
-    private static void Wu32(byte[] b, int o, uint v) {               for(int i=0;i<4;i++) b[o+i]=(byte)(v>>(i*8)); }
-
-    public static string Hr(int hr)
-    {
-        switch (hr)
+        switch (hresult)
         {
-            case S_OK:                   return "S_OK";
-            case HR_FILE_NOT_FOUND:      return "FileNotFound";
-            case HR_PATH_NOT_FOUND:      return "PathNotFound";
-            case HR_INSUFFICIENT_BUFFER: return "InsufficientBuffer";
-            case HR_NOT_A_REPARSE_POINT: return "NotAReparsePoint";
-            case E_FAIL:                 return "E_FAIL";
-            default:                     return "0x" + ((uint)hr).ToString("X8");
+            case HResultOk:                 return "S_OK";
+            case HResultFileNotFound:       return "FileNotFound";
+            case HResultPathNotFound:       return "PathNotFound";
+            case HResultInsufficientBuffer: return "InsufficientBuffer";
+            case HResultNotAReparsePoint:   return "NotAReparsePoint";
+            case HResultFail:               return "E_FAIL";
+            default:                        return "0x" + ((uint)hresult).ToString("X8");
         }
-    }
-
-    private static string PcwstrAt(IntPtr base_, int offset)
-    {
-        IntPtr p = Marshal.ReadIntPtr(base_, offset);
-        return p == IntPtr.Zero ? null : Marshal.PtrToStringUni(p);
     }
 }
 
@@ -1067,14 +1349,14 @@ internal static class Program
     private static int Main(string[] args)
     {
         Console.WriteLine();
-        Console.WriteLine("  PhantomFS v1.1.2  —  Virtual Honeypot File System");
-        Console.WriteLine("  " + new string('─', 50));
+        Console.WriteLine("  PhantomFS  -  Virtual Honeypot File System");
+        Console.WriteLine("  " + new string('-', 50));
         Console.WriteLine();
 
         // Locate config
-        System.Reflection.Assembly asm = System.Reflection.Assembly.GetEntryAssembly();
-        string configPath = asm != null
-            ? asm.Location + ".config"
+        System.Reflection.Assembly entryAssembly = System.Reflection.Assembly.GetEntryAssembly();
+        string configPath = entryAssembly != null
+            ? entryAssembly.Location + ".config"
             : Path.Combine(Directory.GetCurrentDirectory(), "PhantomFS.exe.config");
 
         Console.WriteLine("  Config   : " + configPath);
@@ -1082,67 +1364,135 @@ internal static class Program
         // Load settings, templates, and file list
         PhantomFSSettings.Load(configPath);
         SyntheticContent.LoadFromConfig(configPath);
-        SyntheticData synthetic = SyntheticData.LoadFromConfig(configPath);
-        if (synthetic != null)
-            Console.WriteLine("  Entries  : " + synthetic.EntryCount + " synthetic files/dirs");
-
-        // Parse CLI args — override config-embedded paths if supplied
-        string sourceRoot    = PhantomFSSettings.ConfigSourceRoot;
-        string virtRoot      = PhantomFSSettings.ConfigVirtRoot;
-        bool   syntheticOnly = PhantomFSSettings.ConfigSyntheticOnly;
-
-        for (int i = 0; i < args.Length; i++)
+        SyntheticData syntheticData = SyntheticData.LoadFromConfig(configPath);
+        if (syntheticData != null)
         {
-            string f = args[i];
-            if (f.Equals("--syntheticonly", StringComparison.OrdinalIgnoreCase)) { syntheticOnly = true; continue; }
-            if (i + 1 >= args.Length) continue;
-            string v = args[i + 1];
-            if      (f.Equals("--sourceroot", StringComparison.OrdinalIgnoreCase)) { sourceRoot = v; i++; }
-            else if (f.Equals("--virtroot",   StringComparison.OrdinalIgnoreCase)) { virtRoot   = v; i++; }
+            Console.WriteLine("  Entries  : " + syntheticData.EntryCount + " synthetic files/dirs");
         }
 
-        if (virtRoot == null)            { PrintUsage(); return 1; }
+        // Parse CLI args - override config-embedded paths if supplied
+        string sourceRoot = PhantomFSSettings.ConfigSourceRoot;
+        string virtualRoot = PhantomFSSettings.ConfigVirtRoot;
+        bool syntheticOnly = PhantomFSSettings.ConfigSyntheticOnly;
+
+        for (int argIndex = 0; argIndex < args.Length; argIndex++)
+        {
+            string flag = args[argIndex];
+            if (flag.Equals("--syntheticonly", StringComparison.OrdinalIgnoreCase))
+            {
+                syntheticOnly = true;
+                continue;
+            }
+
+            if (argIndex + 1 >= args.Length)
+            {
+                continue;
+            }
+
+            string value = args[argIndex + 1];
+            if (flag.Equals("--sourceroot", StringComparison.OrdinalIgnoreCase))
+            {
+                sourceRoot = value;
+                argIndex++;
+            }
+            else if (flag.Equals("--virtroot", StringComparison.OrdinalIgnoreCase))
+            {
+                virtualRoot = value;
+                argIndex++;
+            }
+        }
+
+        if (virtualRoot == null)
+        {
+            PrintUsage();
+            return 1;
+        }
+
         if (!syntheticOnly && sourceRoot == null)
-        { Console.Error.WriteLine("[ERROR] --sourceroot required unless --syntheticonly"); PrintUsage(); return 1; }
-        if (syntheticOnly && synthetic == null)
-        { Console.Error.WriteLine("[ERROR] --syntheticonly requires <syntheticFileList> in config"); return 1; }
+        {
+            Console.Error.WriteLine("[ERROR] --sourceroot required unless --syntheticonly");
+            PrintUsage();
+            return 1;
+        }
+
+        if (syntheticOnly && syntheticData == null)
+        {
+            Console.Error.WriteLine("[ERROR] --syntheticonly requires <syntheticFileList> in config");
+            return 1;
+        }
 
         // Initialise alert channels
         AlertManager.Initialize();
 
         // Create and start the provider
         PhantomFSProvider provider;
-        try { provider = new PhantomFSProvider(sourceRoot, virtRoot, synthetic, syntheticOnly); }
-        catch (Exception ex) { Console.Error.WriteLine("[ERROR] " + ex.Message); return 1; }
-
-        int hr = provider.StartVirtualizing();
-        if (hr != Prj.S_OK)
+        try
         {
-            Console.Error.WriteLine("[ERROR] PrjStartVirtualizing failed: " + Prj.Hr(hr));
-            if (hr == Prj.HR_NOT_A_REPARSE_POINT)
-                Console.Error.WriteLine("        Run: rmdir /s /q \"" + Path.GetFullPath(virtRoot) + "\"");
+            provider = new PhantomFSProvider(sourceRoot, virtualRoot, syntheticData, syntheticOnly);
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine("[ERROR] " + exception.Message);
+            return 1;
+        }
+
+        int startResult = provider.StartVirtualizing();
+        if (startResult != ProjectedFileSystemNative.HResultOk)
+        {
+            Console.Error.WriteLine("[ERROR] PrjStartVirtualizing failed: "
+                + ProjectedFileSystemNative.DescribeHResult(startResult));
+            if (startResult == ProjectedFileSystemNative.HResultNotAReparsePoint)
+            {
+                Console.Error.WriteLine("        Run: rmdir /s /q \"" + Path.GetFullPath(virtualRoot) + "\"");
+            }
             else
+            {
                 Console.Error.WriteLine("        Ensure Client-ProjFS is enabled and this process is elevated.");
+            }
+
             return 1;
         }
 
         Console.WriteLine();
-        Console.WriteLine("  \u2611  Provider running.");
-        Console.WriteLine("  VirtRoot : " + Path.GetFullPath(virtRoot));
-        if (!syntheticOnly) Console.WriteLine("  Source   : " + Path.GetFullPath(sourceRoot));
+        Console.WriteLine("  [OK] Provider running.");
+        Console.WriteLine("  VirtRoot : " + Path.GetFullPath(virtualRoot));
+        if (!syntheticOnly)
+        {
+            Console.WriteLine("  Source   : " + Path.GetFullPath(sourceRoot));
+        }
+
         Console.WriteLine("  Mode     : " + (syntheticOnly ? "synthetic-only" : "mixed"));
         Console.WriteLine("  EventLog : " + PhantomFSSettings.EnableEventLog
                         + "   Toast : " + PhantomFSSettings.EnableToast);
         Console.WriteLine("  Cleanup  : "
             + (PhantomFSSettings.AutoCleanupEnabled
-                ? "enabled — " + PhantomFSSettings.AutoCleanupDelaySeconds + "s delay"
+                ? "enabled - " + PhantomFSSettings.AutoCleanupDelaySeconds + "s delay"
                 : "disabled"));
         Console.WriteLine();
-        Console.WriteLine("  Press ENTER to stop\u2026");
+        Console.WriteLine("  Press ENTER to stop...");
 
-        AlertManager.OnProviderStarted(Path.GetFullPath(virtRoot));
+        AlertManager.OnProviderStarted(Path.GetFullPath(virtualRoot));
+
+        // Guarantee shutdown cleanup on Ctrl+C and on normal process exit, not
+        // just on ENTER.  StopVirtualizing is idempotent, so overlapping paths
+        // (ENTER plus ProcessExit, or Ctrl+C plus ProcessExit) are safe.
+        Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs eventArgs)
+        {
+            eventArgs.Cancel = true;   // run our cleanup instead of a hard kill
+            Console.WriteLine();
+            Console.WriteLine("  Ctrl+C received - stopping...");
+            AlertManager.OnProviderStopped(Path.GetFullPath(virtualRoot));
+            provider.StopVirtualizing();
+            Console.WriteLine("  PhantomFS stopped.");
+            Environment.Exit(0);
+        };
+        AppDomain.CurrentDomain.ProcessExit += delegate(object sender, EventArgs eventArgs)
+        {
+            provider.StopVirtualizing();
+        };
+
         Console.ReadLine();
-        AlertManager.OnProviderStopped(Path.GetFullPath(virtRoot));
+        AlertManager.OnProviderStopped(Path.GetFullPath(virtualRoot));
         provider.StopVirtualizing();
         Console.WriteLine("  PhantomFS stopped.");
         return 0;
@@ -1160,461 +1510,770 @@ internal static class Program
         Console.WriteLine("    --syntheticonly       Serve only config-defined synthetic files.");
         Console.WriteLine();
         Console.WriteLine("  Notes:");
-        Console.WriteLine("    \u2022 Requires Administrator.");
-        Console.WriteLine("    \u2022 Paths can also be set in PhantomFS.exe.config <settings>.");
-        Console.WriteLine("    \u2022 Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart");
+        Console.WriteLine("    * Requires Administrator.");
+        Console.WriteLine("    * Paths can also be set in PhantomFS.exe.config <settings>.");
+        Console.WriteLine("    * Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart");
     }
 }
 
 // =============================================================================
-// PhantomFSProvider — ProjFS provider implementation
+// PhantomFSProvider - ProjFS provider implementation
 // =============================================================================
 
 internal sealed class PhantomFSProvider
 {
-    private readonly string        _sourceRoot;
-    private readonly string        _virtRoot;
-    private readonly SyntheticData _synthetic;
-    private readonly bool          _syntheticOnly;
-    private IntPtr                 _virtCtx;
+    private readonly string _sourceRoot;
+    private readonly string _virtualRoot;
+    private readonly SyntheticData _syntheticData;
+    private readonly bool _syntheticOnly;
+    private IntPtr _virtualizationContext;
 
-    private readonly ConcurrentDictionary<Guid, EnumerationSession> _sessions
-        = new ConcurrentDictionary<Guid, EnumerationSession>();
+    private readonly ConcurrentDictionary<Guid, EnumerationSession> _enumerationSessions =
+        new ConcurrentDictionary<Guid, EnumerationSession>();
 
     // Tracks synthetic files that have been materialized to disk, keyed by
     // their relative path.  The value is the UTC time of first hydration.
     // The cleanup timer reads and removes entries from this dictionary on its
-    // own thread — ConcurrentDictionary ensures thread safety.
-    private readonly ConcurrentDictionary<string, DateTime> _materializedFiles
-        = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+    // own thread - ConcurrentDictionary ensures thread safety.
+    private readonly ConcurrentDictionary<string, DateTime> _materializedFiles =
+        new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
     private Timer _cleanupTimer;
+    private readonly object _shutdownLock = new object();
+    private bool _markedAsPlaceholderRoot;
 
     private static PhantomFSProvider _current;
 
     // Delegate fields prevent GC while ProjFS callbacks are active.
-    private readonly Prj.StartDirEnumCb       _cbStart;
-    private readonly Prj.EndDirEnumCb         _cbEnd;
-    private readonly Prj.GetDirEnumCb         _cbEnum;
-    private readonly Prj.GetPlaceholderInfoCb _cbPhi;
-    private readonly Prj.GetFileDataCb        _cbData;
+    private readonly ProjectedFileSystemNative.StartDirectoryEnumerationCallback _startEnumerationCallback;
+    private readonly ProjectedFileSystemNative.EndDirectoryEnumerationCallback _endEnumerationCallback;
+    private readonly ProjectedFileSystemNative.GetDirectoryEnumerationCallback _getEnumerationCallback;
+    private readonly ProjectedFileSystemNative.GetPlaceholderInfoCallback _getPlaceholderInfoCallback;
+    private readonly ProjectedFileSystemNative.GetFileDataCallback _getFileDataCallback;
 
     public PhantomFSProvider(
-        string sourceRoot, string virtRoot,
-        SyntheticData synthetic, bool syntheticOnly)
+        string sourceRoot, string virtualRoot,
+        SyntheticData syntheticData, bool syntheticOnly)
     {
         _syntheticOnly = syntheticOnly;
-        _synthetic     = synthetic;
-        _virtRoot      = Path.GetFullPath(virtRoot);
+        _syntheticData = syntheticData;
+        _virtualRoot = Path.GetFullPath(virtualRoot);
 
-        if (syntheticOnly) { _sourceRoot = string.Empty; }
+        if (syntheticOnly)
+        {
+            _sourceRoot = string.Empty;
+        }
         else
         {
             if (!Directory.Exists(sourceRoot))
+            {
                 throw new ArgumentException("Source root does not exist: " + sourceRoot);
+            }
+
             _sourceRoot = Path.GetFullPath(sourceRoot);
         }
 
-        Directory.CreateDirectory(_virtRoot);
+        Directory.CreateDirectory(_virtualRoot);
 
-        _cbStart = StartThunk;
-        _cbEnd   = EndThunk;
-        _cbEnum  = EnumThunk;
-        _cbPhi   = PhiThunk;
-        _cbData  = DataThunk;
+        _startEnumerationCallback = StartEnumerationThunk;
+        _endEnumerationCallback = EndEnumerationThunk;
+        _getEnumerationCallback = GetEnumerationThunk;
+        _getPlaceholderInfoCallback = GetPlaceholderInfoThunk;
+        _getFileDataCallback = GetFileDataThunk;
     }
 
     public int StartVirtualizing()
     {
         _current = this;
 
-        // Safety check: require explicit confirmation before discarding any existing
-        // content. This prevents accidental data loss if --virtroot is mistakenly
-        // pointed at a real directory that happens to share the intended path.
-        if (Directory.Exists(_virtRoot))
+        // REAL-FILE GUARD 1: the virtroot and sourceroot must never overlap.
+        // A nested or identical pair would let the projection and cleanup
+        // machinery operate over real files.
+        if (!_syntheticOnly && PathsOverlap(_virtualRoot, _sourceRoot))
         {
-            string[] existing = Directory.GetFileSystemEntries(_virtRoot);
-            if (existing.Length > 0)
+            Console.Error.WriteLine("[ABORT] --virtroot and --sourceroot overlap:");
+            Console.Error.WriteLine("        virtroot   = " + _virtualRoot);
+            Console.Error.WriteLine("        sourceroot = " + _sourceRoot);
+            Console.Error.WriteLine("        Choose two unrelated directories.");
+            return ProjectedFileSystemNative.HResultFail;
+        }
+
+        // REAL-FILE GUARD 2: only ever delete a pre-existing virtroot when it
+        // is provably stale ProjFS state from a previous run, identified by
+        // the reparse-point attribute that PrjMarkDirectoryAsPlaceholder sets
+        // on the root.  A normal directory containing content is real data:
+        // it is never deleted here, with or without confirmation.
+        if (Directory.Exists(_virtualRoot))
+        {
+            bool isProjectionRoot =
+                (File.GetAttributes(_virtualRoot) & FileAttributes.ReparsePoint) != 0;
+            bool isEmpty = Directory.GetFileSystemEntries(_virtualRoot).Length == 0;
+
+            if (isProjectionRoot)
             {
-                Console.WriteLine();
-                Console.WriteLine("  [SAFETY] VirtRoot is not empty — "
-                                + existing.Length + " item(s) detected:");
-                Console.WriteLine("  " + _virtRoot);
-                Console.WriteLine();
-                Console.Write("  Permanently delete all contents and continue? [y/N] ");
-                string answer = Console.ReadLine();
-                if (answer == null ||
-                    !answer.Trim().Equals("y", StringComparison.OrdinalIgnoreCase))
+                // Stale state from a previous PhantomFS run.  Clearing it
+                // prevents HResultNotAReparsePoint on restart.
+                Console.WriteLine("  Clearing stale ProjFS virtroot: " + _virtualRoot);
+                try
                 {
-                    Console.Error.WriteLine("[ABORT] Clear the directory manually and re-run.");
-                    return Prj.E_FAIL;
+                    Directory.Delete(_virtualRoot, true);
+                }
+                catch (Exception exception)
+                {
+                    Console.Error.WriteLine("[WARN] " + exception.Message);
                 }
             }
-
-            // Remove stale ProjFS state to prevent HR_NOT_A_REPARSE_POINT.
-            Console.WriteLine("  Clearing stale virtroot: " + _virtRoot);
-            try { Directory.Delete(_virtRoot, true); }
-            catch (Exception ex) { Console.Error.WriteLine("[WARN] " + ex.Message); }
+            else if (!isEmpty)
+            {
+                Console.Error.WriteLine("[ABORT] VirtRoot exists, is not a ProjFS root, and is not empty:");
+                Console.Error.WriteLine("        " + _virtualRoot);
+                Console.Error.WriteLine("        Refusing to touch it - it may contain real data.");
+                Console.Error.WriteLine("        Point --virtroot at a new or empty directory.");
+                return ProjectedFileSystemNative.HResultFail;
+            }
         }
-        Directory.CreateDirectory(_virtRoot);
 
-        Guid id = Guid.NewGuid();
-        int hr = Prj.PrjMarkDirectoryAsPlaceholder(_virtRoot, null, IntPtr.Zero, ref id);
-        if (hr != Prj.S_OK) { Console.Error.WriteLine("[ERROR] PrjMark: " + Prj.Hr(hr)); return hr; }
+        Directory.CreateDirectory(_virtualRoot);
 
-        Prj.Callbacks cbs = new Prj.Callbacks();
-        cbs.StartDirEnum       = Marshal.GetFunctionPointerForDelegate(_cbStart);
-        cbs.EndDirEnum         = Marshal.GetFunctionPointerForDelegate(_cbEnd);
-        cbs.GetDirEnum         = Marshal.GetFunctionPointerForDelegate(_cbEnum);
-        cbs.GetPlaceholderInfo = Marshal.GetFunctionPointerForDelegate(_cbPhi);
-        cbs.GetFileData        = Marshal.GetFunctionPointerForDelegate(_cbData);
-
-        int startHr = Prj.PrjStartVirtualizing(_virtRoot, ref cbs, IntPtr.Zero, IntPtr.Zero, out _virtCtx);
-
-        if (startHr == Prj.S_OK && PhantomFSSettings.AutoCleanupEnabled)
+        Guid virtualizationInstanceId = Guid.NewGuid();
+        int markResult = ProjectedFileSystemNative.PrjMarkDirectoryAsPlaceholder(
+            _virtualRoot, null, IntPtr.Zero, ref virtualizationInstanceId);
+        if (markResult != ProjectedFileSystemNative.HResultOk)
         {
-            // Check every 30 seconds; delete files older than AutoCleanupDelaySeconds.
+            Console.Error.WriteLine("[ERROR] PrjMark: " + ProjectedFileSystemNative.DescribeHResult(markResult));
+            return markResult;
+        }
+
+        // From this point the directory is a ProjFS placeholder root created by
+        // this instance, so shutdown is allowed to remove it.
+        _markedAsPlaceholderRoot = true;
+
+        ProjectedFileSystemNative.CallbackTable callbacks = new ProjectedFileSystemNative.CallbackTable();
+        callbacks.StartDirectoryEnumeration = Marshal.GetFunctionPointerForDelegate(_startEnumerationCallback);
+        callbacks.EndDirectoryEnumeration = Marshal.GetFunctionPointerForDelegate(_endEnumerationCallback);
+        callbacks.GetDirectoryEnumeration = Marshal.GetFunctionPointerForDelegate(_getEnumerationCallback);
+        callbacks.GetPlaceholderInfo = Marshal.GetFunctionPointerForDelegate(_getPlaceholderInfoCallback);
+        callbacks.GetFileData = Marshal.GetFunctionPointerForDelegate(_getFileDataCallback);
+
+        int startResult = ProjectedFileSystemNative.PrjStartVirtualizing(
+            _virtualRoot, ref callbacks, IntPtr.Zero, IntPtr.Zero, out _virtualizationContext);
+
+        if (startResult == ProjectedFileSystemNative.HResultOk && PhantomFSSettings.AutoCleanupEnabled)
+        {
+            // Check every 30 seconds; revert files older than AutoCleanupDelaySeconds.
             _cleanupTimer = new Timer(
                 CleanupCallback, null,
                 TimeSpan.FromSeconds(30),
                 TimeSpan.FromSeconds(30));
-            Log("[CLEANUP] Timer started — delay=" + PhantomFSSettings.AutoCleanupDelaySeconds + "s");
+            Log("[CLEANUP] Timer started - delay=" + PhantomFSSettings.AutoCleanupDelaySeconds + "s");
         }
 
-        return startHr;
+        return startResult;
     }
 
+    // Stops the provider and guarantees that no synthetic content remains on
+    // disk afterwards:
+    //   1. While the virtualization context is still live, every materialized
+    //      synthetic file is reverted to an unhydrated placeholder (reverts
+    //      require an active context, so this must happen before stopping).
+    //   2. The provider is stopped.
+    //   3. The virtroot is deleted.  The virtroot is purely a projection: in
+    //      synthetic-only mode it contains nothing real, and in mixed mode it
+    //      contains only placeholders whose real content lives untouched in
+    //      the source root.  The directory is only deleted when this instance
+    //      marked it as a placeholder root, never an arbitrary path.
+    // Safe to call multiple times; subsequent calls are no-ops.
     public void StopVirtualizing()
     {
-        if (_cleanupTimer != null)
+        lock (_shutdownLock)
         {
-            _cleanupTimer.Dispose();
-            _cleanupTimer = null;
+            if (_cleanupTimer != null)
+            {
+                _cleanupTimer.Dispose();
+                _cleanupTimer = null;
+            }
+
+            if (_virtualizationContext == IntPtr.Zero)
+            {
+                return;
+            }
+
+            // Final revert pass: ignore the configured delay and retry briefly
+            // so files held open by a reader still get reverted once released.
+            const int MaxFinalPassAttempts = 5;
+            for (int attempt = 0; attempt < MaxFinalPassAttempts && !_materializedFiles.IsEmpty; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    Thread.Sleep(500);
+                }
+
+                foreach (KeyValuePair<string, DateTime> materializedFile in _materializedFiles)
+                {
+                    RevertToPlaceholder(materializedFile.Key);
+                }
+            }
+
+            if (!_materializedFiles.IsEmpty)
+            {
+                Console.Error.WriteLine("[WARN] " + _materializedFiles.Count
+                    + " synthetic file(s) could not be reverted before stop (still open?).");
+            }
+
+            ProjectedFileSystemNative.PrjStopVirtualizing(_virtualizationContext);
+            _virtualizationContext = IntPtr.Zero;
+
+            RemoveProjectionRoot();
         }
-        if (_virtCtx == IntPtr.Zero) return;
-        Prj.PrjStopVirtualizing(_virtCtx);
-        _virtCtx = IntPtr.Zero;
+    }
+
+    // Deletes the virtroot directory tree after the provider has stopped.
+    // Only runs when this instance itself marked the directory as a ProjFS
+    // placeholder root, so an arbitrary directory can never be deleted here.
+    private void RemoveProjectionRoot()
+    {
+        if (!_markedAsPlaceholderRoot)
+        {
+            return;
+        }
+
+        try
+        {
+            if (Directory.Exists(_virtualRoot))
+            {
+                Directory.Delete(_virtualRoot, true);
+                Console.WriteLine("  Projection root removed: " + _virtualRoot);
+            }
+
+            _markedAsPlaceholderRoot = false;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine("[WARN] Could not remove projection root "
+                + _virtualRoot + " - " + exception.Message);
+            Console.Error.WriteLine("       Remove it manually: rmdir /s /q \"" + _virtualRoot + "\"");
+        }
     }
 
     // ---- Auto-cleanup callback ----
 
     // Runs on a thread-pool thread every 30 seconds.
     // For each synthetic file whose first-hydration time exceeds
-    // AutoCleanupDelaySeconds, calls PrjUpdateFileIfNeeded to revert it from
-    // hydrated state back to an unhydrated placeholder.
+    // AutoCleanupDelaySeconds, de-hydrates it back to a pure virtual entry via
+    // RevertToPlaceholder (PrjDeleteFile).
     //
-    // Why PrjUpdateFileIfNeeded instead of File.Delete:
-    //   File.Delete on a ProjFS placeholder creates a tombstone — a special
-    //   reparse marker that permanently blocks re-projection of that path until
-    //   the tombstone is explicitly cleared.  Deleted files therefore disappear
-    //   from the virtual directory and never trigger alerts again.
-    //   PrjUpdateFileIfNeeded reverts the on-disk state atomically without
-    //   creating a tombstone: the file stays visible in directory listings,
-    //   its content is invalidated, and the next read fires a fresh GetFileData
-    //   callback (and therefore a fresh alert).
+    // Why PrjDeleteFile instead of File.Delete:
+    //   File.Delete on a ProjFS placeholder creates a tombstone: a reparse
+    //   marker that blocks re-projection of that path until it is cleared.
+    //   Deleted files therefore disappear from the virtual directory and never
+    //   trigger alerts again. PrjDeleteFile with the dirty-data flag drops the
+    //   hydrated data stream WITHOUT a tombstone, so the file stays visible in
+    //   directory listings and the next read fires a fresh GetFileData callback
+    //   (and therefore a fresh alert).
     private void CleanupCallback(object state)
     {
-        if (!PhantomFSSettings.AutoCleanupEnabled) return;
-        if (_synthetic == null || _virtCtx == IntPtr.Zero) return;
-
-        TimeSpan threshold = TimeSpan.FromSeconds(PhantomFSSettings.AutoCleanupDelaySeconds);
-        DateTime now       = DateTime.UtcNow;
-
-        foreach (KeyValuePair<string, DateTime> kvp in _materializedFiles)
+        if (!PhantomFSSettings.AutoCleanupEnabled)
         {
-            if ((now - kvp.Value) < threshold) continue;
-
-            SyntheticEntry s = _synthetic.Find(kvp.Key);
-            if (s == null || s.IsDirectory) continue;
-
-            // Rebuild the original placeholder info for this synthetic entry.
-            long   ft = s.GetFiletime();
-            byte[] ph = Prj.BuildPlaceholderInfo(
-                false, s.FileSize, ft, ft, ft, ft, 0x20u);
-
-            // PRJ_UPDATE_ALLOW_DIRTY_DATA     — file may have been read/cached
-            // PRJ_UPDATE_ALLOW_DIRTY_METADATA — timestamps may have been touched
-            // PRJ_UPDATE_ALLOW_TOMBSTONE      — handle the edge case where a
-            //                                    tombstone already exists so we
-            //                                    can restore the file in that case too
-            uint failureReason;
-            int  revertHr = Prj.PrjUpdateFileIfNeeded(
-                _virtCtx, kvp.Key, ph, (uint)ph.Length,
-                  Prj.PRJ_UPDATE_ALLOW_DIRTY_DATA
-                | Prj.PRJ_UPDATE_ALLOW_DIRTY_METADATA
-                | Prj.PRJ_UPDATE_ALLOW_TOMBSTONE,
-                out failureReason);
-
-            if (revertHr == Prj.S_OK)
-            {
-                Log("[CLEANUP] Reverted to placeholder: " + kvp.Key);
-                DateTime dummy;
-                _materializedFiles.TryRemove(kvp.Key, out dummy);
-            }
-            else
-            {
-                // File is likely still open — leave in the dictionary and retry next cycle.
-                Log("[CLEANUP] Revert failed: " + kvp.Key
-                    + " — " + Prj.Hr(revertHr)
-                    + " (failureReason=0x" + failureReason.ToString("X") + ")");
-            }
+            return;
         }
+
+        if (_syntheticData == null || _virtualizationContext == IntPtr.Zero)
+        {
+            return;
+        }
+
+        TimeSpan cleanupThreshold = TimeSpan.FromSeconds(PhantomFSSettings.AutoCleanupDelaySeconds);
+        DateTime now = DateTime.UtcNow;
+
+        foreach (KeyValuePair<string, DateTime> materializedFile in _materializedFiles)
+        {
+            if ((now - materializedFile.Value) < cleanupThreshold)
+            {
+                continue;
+            }
+
+            RevertToPlaceholder(materializedFile.Key);
+        }
+    }
+
+    // De-hydrates one materialized synthetic file back to a pure virtual entry.
+    // Returns true when the file was reverted (or safely skipped) and its entry
+    // removed from the tracking dictionary; false when it should be retried.
+    //
+    // Uses PrjDeleteFile, which drops the hydrated data stream without leaving a
+    // tombstone. The entry stays visible and the next read re-triggers
+    // GetFileData and a fresh alert. PrjUpdateFileIfNeeded was tried first but
+    // only rewrote placeholder metadata: it left the cached data stream in place,
+    // so re-reads were served from cache with no callback and no alert.
+    //
+    // REAL-FILE GUARD: a path is never reverted when a real source file exists
+    // behind it in mixed mode.  Real files are served by the real branch of
+    // OnGetFileData and are never added to _materializedFiles, but this guard
+    // ensures that even a tracking bug or a real file appearing at a formerly
+    // synthetic path after startup can never lead to PrjDeleteFile touching
+    // real-backed content.
+    private bool RevertToPlaceholder(string relativePath)
+    {
+        DateTime removedValue;
+
+        if (!_syntheticOnly && File.Exists(GetSourcePath(relativePath)))
+        {
+            Log("[CLEANUP] Skipped (real source file exists): " + relativePath);
+            _materializedFiles.TryRemove(relativePath, out removedValue);
+            return true;
+        }
+
+        SyntheticEntry entry = _syntheticData != null ? _syntheticData.Find(relativePath) : null;
+        if (entry == null || entry.IsDirectory)
+        {
+            _materializedFiles.TryRemove(relativePath, out removedValue);
+            return true;
+        }
+
+        // DirtyData     - the data stream was hydrated by the earlier read
+        // DirtyMetadata - timestamps may have been touched
+        // Tombstone     - authorize the edge case where a tombstone already exists
+        uint failureReason;
+        int revertResult = ProjectedFileSystemNative.PrjDeleteFile(
+            _virtualizationContext,
+            relativePath,
+              ProjectedFileSystemNative.UpdateAllowDirtyData
+            | ProjectedFileSystemNative.UpdateAllowDirtyMetadata
+            | ProjectedFileSystemNative.UpdateAllowTombstone,
+            out failureReason);
+
+        if (revertResult == ProjectedFileSystemNative.HResultOk)
+        {
+            Log("[CLEANUP] Reverted to placeholder: " + relativePath);
+            _materializedFiles.TryRemove(relativePath, out removedValue);
+            return true;
+        }
+
+        // File is likely still open. Leave in the dictionary so it is retried.
+        Log("[CLEANUP] Revert failed: " + relativePath
+            + " - " + ProjectedFileSystemNative.DescribeHResult(revertResult)
+            + " (failureReason=0x" + failureReason.ToString("X") + ")");
+        return false;
     }
 
     // ---- Static thunks ----
-    private static int StartThunk(IntPtr c, IntPtr e) { try { return _current.OnStart(c, e); } catch { return Prj.E_FAIL; } }
-    private static int EndThunk  (IntPtr c, IntPtr e) { try { return _current.OnEnd  (c, e); } catch { return Prj.E_FAIL; } }
-    private static int EnumThunk (IntPtr c, IntPtr e, IntPtr s, IntPtr b) { try { return _current.OnEnum(c,e,s,b); } catch { return Prj.E_FAIL; } }
-    private static int PhiThunk  (IntPtr c)           { try { return _current.OnPhi  (c);    } catch { return Prj.E_FAIL; } }
-    private static int DataThunk (IntPtr c, ulong o, uint l) { try { return _current.OnData(c,o,l); } catch { return Prj.E_FAIL; } }
+    // ProjFS callbacks must never let a managed exception cross the native
+    // boundary; each thunk converts failures to E_FAIL.
+
+    private static int StartEnumerationThunk(
+        ref ProjectedFileSystemNative.CallbackData callbackData, ref Guid enumerationId)
+    {
+        try { return _current.OnStartEnumeration(ref callbackData, enumerationId); }
+        catch { return ProjectedFileSystemNative.HResultFail; }
+    }
+
+    private static int EndEnumerationThunk(
+        ref ProjectedFileSystemNative.CallbackData callbackData, ref Guid enumerationId)
+    {
+        try { return _current.OnEndEnumeration(enumerationId); }
+        catch { return ProjectedFileSystemNative.HResultFail; }
+    }
+
+    private static int GetEnumerationThunk(
+        ref ProjectedFileSystemNative.CallbackData callbackData, ref Guid enumerationId,
+        string searchExpression, IntPtr dirEntryBufferHandle)
+    {
+        try { return _current.OnGetEnumeration(ref callbackData, enumerationId, searchExpression, dirEntryBufferHandle); }
+        catch { return ProjectedFileSystemNative.HResultFail; }
+    }
+
+    private static int GetPlaceholderInfoThunk(ref ProjectedFileSystemNative.CallbackData callbackData)
+    {
+        try { return _current.OnGetPlaceholderInfo(ref callbackData); }
+        catch { return ProjectedFileSystemNative.HResultFail; }
+    }
+
+    private static int GetFileDataThunk(
+        ref ProjectedFileSystemNative.CallbackData callbackData, ulong byteOffset, uint length)
+    {
+        try { return _current.OnGetFileData(ref callbackData, byteOffset, length); }
+        catch { return ProjectedFileSystemNative.HResultFail; }
+    }
 
     // ---- Callback implementations ----
 
-    private int OnStart(IntPtr cbd, IntPtr enumIdPtr)
+    private int OnStartEnumeration(
+        ref ProjectedFileSystemNative.CallbackData callbackData, Guid enumerationId)
     {
-        string rel = Prj.CbdFilePath(cbd) ?? string.Empty;
-        Log("StartEnum [" + rel + "]");
+        string relativePath = callbackData.FilePathName ?? string.Empty;
+        Log("StartEnum [" + relativePath + "]");
 
-        List<DirEntry> all = new List<DirEntry>();
+        List<DirEntry> allEntries = new List<DirEntry>();
 
         if (!_syntheticOnly)
         {
-            string full = SrcPath(rel);
-            if (Directory.Exists(full))
+            string fullSourcePath = GetSourcePath(relativePath);
+            if (Directory.Exists(fullSourcePath))
             {
-                try { foreach (FileSystemInfo fsi in new DirectoryInfo(full).GetFileSystemInfos()) all.Add(RealEntry(fsi)); }
-                catch (Exception ex) { Log("[WARN] " + ex.Message); }
+                try
+                {
+                    foreach (FileSystemInfo fileSystemInfo in new DirectoryInfo(fullSourcePath).GetFileSystemInfos())
+                    {
+                        allEntries.Add(CreateRealEntry(fileSystemInfo));
+                    }
+                }
+                catch (Exception exception)
+                {
+                    Log("[WARN] " + exception.Message);
+                }
             }
         }
 
-        if (_synthetic != null)
-            foreach (SyntheticEntry s in _synthetic.GetChildren(rel))
-                if (!NameExists(all, s.Name)) all.Add(SynthEntry(s));
+        if (_syntheticData != null)
+        {
+            foreach (SyntheticEntry syntheticEntry in _syntheticData.GetChildren(relativePath))
+            {
+                if (!NameExists(allEntries, syntheticEntry.Name))
+                {
+                    allEntries.Add(CreateSyntheticEntry(syntheticEntry));
+                }
+            }
+        }
 
-        all.Sort(delegate(DirEntry a, DirEntry b)
-        { return string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase); });
+        allEntries.Sort(delegate(DirEntry left, DirEntry right)
+        {
+            return string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase);
+        });
 
-        _sessions[Prj.ReadGuid(enumIdPtr)] = new EnumerationSession(all.ToArray());
-        return Prj.S_OK;
+        _enumerationSessions[enumerationId] = new EnumerationSession(allEntries.ToArray());
+        return ProjectedFileSystemNative.HResultOk;
     }
 
-    private int OnEnd(IntPtr cbd, IntPtr enumIdPtr)
+    private int OnEndEnumeration(Guid enumerationId)
     {
-        EnumerationSession rm; _sessions.TryRemove(Prj.ReadGuid(enumIdPtr), out rm);
-        return Prj.S_OK;
+        EnumerationSession removedSession;
+        _enumerationSessions.TryRemove(enumerationId, out removedSession);
+        return ProjectedFileSystemNative.HResultOk;
     }
 
-    private int OnEnum(IntPtr cbd, IntPtr enumIdPtr, IntPtr sePtr, IntPtr dirBuf)
+    private int OnGetEnumeration(
+        ref ProjectedFileSystemNative.CallbackData callbackData, Guid enumerationId,
+        string searchExpression, IntPtr dirEntryBufferHandle)
     {
-        string filter = Prj.ReadPcwstr(sePtr) ?? string.Empty;
-        Guid   id     = Prj.ReadGuid(enumIdPtr);
+        string filter = searchExpression ?? string.Empty;
 
         EnumerationSession session;
-        if (!_sessions.TryGetValue(id, out session)) return Prj.E_FAIL;
-        if ((Prj.CbdFlags(cbd) & Prj.FLAG_ENUM_RESTART_SCAN) != 0) session.Reset();
-
-        DirEntry e;
-        while (session.TryGetNext(out e))
+        if (!_enumerationSessions.TryGetValue(enumerationId, out session))
         {
-            if (!string.IsNullOrEmpty(filter) && !Prj.PrjFileNameMatch(e.Name, filter)) continue;
-
-            Prj.FileBasicInfo fi = new Prj.FileBasicInfo();
-            fi.IsDirectory    = e.IsDirectory ? (byte)1 : (byte)0;
-            fi.FileSize       = e.FileSize;
-            fi.CreationTime   = e.CreationTimeFt;
-            fi.LastAccessTime = e.LastAccessTimeFt;
-            fi.LastWriteTime  = e.LastWriteTimeFt;
-            fi.ChangeTime     = e.LastWriteTimeFt;
-            fi.FileAttributes = e.FileAttributes;
-
-            int hr = Prj.PrjFillDirEntryBuffer(e.Name, ref fi, dirBuf);
-            if (hr == Prj.HR_INSUFFICIENT_BUFFER) { session.StepBack(); break; }
-            if (hr != Prj.S_OK) return hr;
+            return ProjectedFileSystemNative.HResultFail;
         }
-        return Prj.S_OK;
+
+        if ((callbackData.Flags & ProjectedFileSystemNative.CallbackDataFlagEnumRestartScan) != 0)
+        {
+            session.Reset();
+        }
+
+        DirEntry entry;
+        while (session.TryGetNext(out entry))
+        {
+            if (!string.IsNullOrEmpty(filter)
+                && !ProjectedFileSystemNative.PrjFileNameMatch(entry.Name, filter))
+            {
+                continue;
+            }
+
+            ProjectedFileSystemNative.FileBasicInfo basicInfo = new ProjectedFileSystemNative.FileBasicInfo();
+            basicInfo.IsDirectory = entry.IsDirectory ? (byte)1 : (byte)0;
+            basicInfo.FileSize = entry.FileSize;
+            basicInfo.CreationTime = entry.CreationTimeFiletime;
+            basicInfo.LastAccessTime = entry.LastAccessTimeFiletime;
+            basicInfo.LastWriteTime = entry.LastWriteTimeFiletime;
+            basicInfo.ChangeTime = entry.LastWriteTimeFiletime;
+            basicInfo.FileAttributes = entry.FileAttributes;
+
+            int fillResult = ProjectedFileSystemNative.PrjFillDirEntryBuffer(
+                entry.Name, ref basicInfo, dirEntryBufferHandle);
+            if (fillResult == ProjectedFileSystemNative.HResultInsufficientBuffer)
+            {
+                session.StepBack();
+                break;
+            }
+
+            if (fillResult != ProjectedFileSystemNative.HResultOk)
+            {
+                return fillResult;
+            }
+        }
+
+        return ProjectedFileSystemNative.HResultOk;
     }
 
-    private int OnPhi(IntPtr cbd)
+    private int OnGetPlaceholderInfo(ref ProjectedFileSystemNative.CallbackData callbackData)
     {
-        string rel   = Prj.CbdFilePath(cbd) ?? string.Empty;
-        string proc  = Prj.CbdTrigProc(cbd);
-        uint   pid   = Prj.CbdTrigPid(cbd);
-        IntPtr vCtx  = Prj.CbdVirtCtx(cbd);
+        string relativePath = callbackData.FilePathName ?? string.Empty;
+        string processName = callbackData.TriggeringProcessImageFileName;
+        uint processId = callbackData.TriggeringProcessId;
+        IntPtr virtualizationContext = callbackData.NamespaceVirtualizationContext;
 
-        Log("GetPlaceholderInfo [" + rel + "] proc=" + proc + " pid=" + pid);
+        Log("GetPlaceholderInfo [" + relativePath + "] proc=" + processName + " pid=" + processId);
 
-        // Detect SMB/network access — PID 4 is the Windows System process, which
+        // Detect SMB/network access - PID 4 is the Windows System process, which
         // is the triggering PID when the kernel SMB driver (srv2.sys) opens a file.
         List<RemoteSessionHelper.SessionInfo> sessions = null;
-        if (RemoteSessionHelper.IsLikelyRemote(pid, proc))
+        if (RemoteSessionHelper.IsLikelyRemote(processId, processName))
+        {
             sessions = RemoteSessionHelper.GetActiveSessions();
+        }
 
-        // ── Real source ──────────────────────────────────────────────────────────────
+        // -- Real source --------------------------------------------------------------
         if (!_syntheticOnly)
         {
-            FileSystemInfo fsi = SrcFsi(SrcPath(rel));
-            if (fsi != null)
+            FileSystemInfo fileSystemInfo = GetSourceFileSystemInfo(GetSourcePath(relativePath));
+            if (fileSystemInfo != null)
             {
-                bool   isDir = (fsi.Attributes & FileAttributes.Directory) != 0;
-                long   sz    = isDir ? 0L : ((FileInfo)fsi).Length;
-                byte[] ph    = Prj.BuildPlaceholderInfo(isDir, sz,
-                    fsi.CreationTime.ToFileTime(), fsi.LastAccessTime.ToFileTime(),
-                    fsi.LastWriteTime.ToFileTime(), fsi.LastWriteTime.ToFileTime(),
-                    (uint)fsi.Attributes & 0xFFFF);
-                int hr2 = Prj.PrjWritePlaceholderInfo(vCtx, rel, ph, (uint)ph.Length);
-                Log("Phi(real) " + Prj.Hr(hr2));
-                return hr2;
+                bool isDirectory = (fileSystemInfo.Attributes & FileAttributes.Directory) != 0;
+                long fileSize = isDirectory ? 0L : ((FileInfo)fileSystemInfo).Length;
+                ProjectedFileSystemNative.PlaceholderInfo placeholder =
+                    ProjectedFileSystemNative.BuildPlaceholderInfo(
+                        isDirectory, fileSize,
+                        fileSystemInfo.CreationTime.ToFileTime(),
+                        fileSystemInfo.LastAccessTime.ToFileTime(),
+                        fileSystemInfo.LastWriteTime.ToFileTime(),
+                        fileSystemInfo.LastWriteTime.ToFileTime(),
+                        (uint)fileSystemInfo.Attributes & 0xFFFF);
+
+                int writeResult = ProjectedFileSystemNative.PrjWritePlaceholderInfo(
+                    virtualizationContext, relativePath,
+                    ref placeholder, ProjectedFileSystemNative.PlaceholderInfoSize);
+                Log("Phi(real) " + ProjectedFileSystemNative.DescribeHResult(writeResult));
+                return writeResult;
             }
         }
 
-        // ── Synthetic ────────────────────────────────────────────────────────────────
-        if (_synthetic != null)
+        // -- Synthetic ----------------------------------------------------------------
+        if (_syntheticData != null)
         {
-            SyntheticEntry s = _synthetic.Find(rel);
-            if (s != null)
+            SyntheticEntry syntheticEntry = _syntheticData.Find(relativePath);
+            if (syntheticEntry != null)
             {
-                long   ft   = s.GetFiletime();
-                byte[] ph   = Prj.BuildPlaceholderInfo(s.IsDirectory,
-                    s.IsDirectory ? 0L : s.FileSize,
-                    ft, ft, ft, ft, s.IsDirectory ? 0x10u : 0x20u);
+                long filetime = syntheticEntry.GetFiletime();
+                ProjectedFileSystemNative.PlaceholderInfo placeholder =
+                    ProjectedFileSystemNative.BuildPlaceholderInfo(
+                        syntheticEntry.IsDirectory,
+                        syntheticEntry.IsDirectory ? 0L : syntheticEntry.FileSize,
+                        filetime, filetime, filetime, filetime,
+                        syntheticEntry.IsDirectory ? 0x10u : 0x20u);
 
-                int hr2 = Prj.PrjWritePlaceholderInfo(vCtx, rel, ph, (uint)ph.Length);
-                if (hr2 == Prj.S_OK && !s.IsDirectory)
-                    AlertManager.OnPlaceholderCreated(rel, proc, pid, sessions);
+                int writeResult = ProjectedFileSystemNative.PrjWritePlaceholderInfo(
+                    virtualizationContext, relativePath,
+                    ref placeholder, ProjectedFileSystemNative.PlaceholderInfoSize);
+                if (writeResult == ProjectedFileSystemNative.HResultOk && !syntheticEntry.IsDirectory)
+                {
+                    AlertManager.OnPlaceholderCreated(relativePath, processName, processId, sessions);
+                }
 
-                Log("Phi(synthetic) " + Prj.Hr(hr2));
-                return hr2;
+                Log("Phi(synthetic) " + ProjectedFileSystemNative.DescribeHResult(writeResult));
+                return writeResult;
             }
         }
 
-        return Prj.HR_FILE_NOT_FOUND;
+        return ProjectedFileSystemNative.HResultFileNotFound;
     }
 
-    private int OnData(IntPtr cbd, ulong byteOffset, uint length)
+    private int OnGetFileData(
+        ref ProjectedFileSystemNative.CallbackData callbackData, ulong byteOffset, uint length)
     {
-        string rel  = Prj.CbdFilePath(cbd) ?? string.Empty;
-        string proc = Prj.CbdTrigProc(cbd);
-        uint   pid  = Prj.CbdTrigPid(cbd);
-        IntPtr vCtx = Prj.CbdVirtCtx(cbd);
-        Guid   sid  = Prj.CbdDataStreamId(cbd);
+        string relativePath = callbackData.FilePathName ?? string.Empty;
+        string processName = callbackData.TriggeringProcessImageFileName;
+        uint processId = callbackData.TriggeringProcessId;
+        IntPtr virtualizationContext = callbackData.NamespaceVirtualizationContext;
+        Guid dataStreamId = callbackData.DataStreamId;
 
-        Log("GetFileData [" + rel + "] offset=" + byteOffset + " len=" + length);
+        Log("GetFileData [" + relativePath + "] offset=" + byteOffset + " len=" + length);
 
-        // Detect SMB/network access — PID 4 indicates the kernel SMB driver.
+        // Detect SMB/network access - PID 4 indicates the kernel SMB driver.
         List<RemoteSessionHelper.SessionInfo> sessions = null;
-        if (RemoteSessionHelper.IsLikelyRemote(pid, proc))
+        if (RemoteSessionHelper.IsLikelyRemote(processId, processName))
+        {
             sessions = RemoteSessionHelper.GetActiveSessions();
+        }
 
-        // PRIMARY ALERT — a process is reading honeypot file content
-        AlertManager.OnFileAccessed(rel, pid, proc, sessions);
+        // PRIMARY ALERT - a process is reading honeypot file content
+        AlertManager.OnFileAccessed(relativePath, processId, processName, sessions);
 
-        // ── Real source ──────────────────────────────────────────────────────────────
+        // -- Real source --------------------------------------------------------------
         if (!_syntheticOnly)
         {
-            string full = SrcPath(rel);
-            if (File.Exists(full))
+            string fullSourcePath = GetSourcePath(relativePath);
+            if (File.Exists(fullSourcePath))
             {
-                byte[] data;
-                try { data = File.ReadAllBytes(full); }
-                catch (Exception ex) { Log("[WARN] Read error — " + ex.Message); return Prj.E_FAIL; }
-                return WriteData(vCtx, ref sid, data, byteOffset, length);
+                byte[] fileData;
+                try
+                {
+                    fileData = File.ReadAllBytes(fullSourcePath);
+                }
+                catch (Exception exception)
+                {
+                    Log("[WARN] Read error - " + exception.Message);
+                    return ProjectedFileSystemNative.HResultFail;
+                }
+
+                return WriteFileData(virtualizationContext, ref dataStreamId, fileData, byteOffset, length);
             }
         }
 
-        // ── Synthetic content ────────────────────────────────────────────────────────
-        if (_synthetic != null)
+        // -- Synthetic content --------------------------------------------------------
+        if (_syntheticData != null)
         {
-            SyntheticEntry s = _synthetic.Find(rel);
-            if (s != null && !s.IsDirectory)
+            SyntheticEntry syntheticEntry = _syntheticData.Find(relativePath);
+            if (syntheticEntry != null && !syntheticEntry.IsDirectory)
             {
-                int writeHr = WriteData(vCtx, ref sid,
-                    SyntheticContent.Generate(s.Name, s.FileSize),
+                int writeResult = WriteFileData(
+                    virtualizationContext, ref dataStreamId,
+                    SyntheticContent.Generate(syntheticEntry.Name, syntheticEntry.FileSize),
                     byteOffset, length);
 
                 // Record the materialization time so the cleanup timer can revert
                 // this file back to a virtual placeholder after the configured delay.
-                // TryAdd is a no-op if the key already exists — we only want the
+                // TryAdd is a no-op if the key already exists - we only want the
                 // time of first hydration, not the most recent partial read.
-                if (writeHr == Prj.S_OK && PhantomFSSettings.AutoCleanupEnabled)
-                    _materializedFiles.TryAdd(rel, DateTime.UtcNow);
+                if (writeResult == ProjectedFileSystemNative.HResultOk && PhantomFSSettings.AutoCleanupEnabled)
+                {
+                    _materializedFiles.TryAdd(relativePath, DateTime.UtcNow);
+                }
 
-                return writeHr;
+                return writeResult;
             }
         }
 
-        return Prj.HR_FILE_NOT_FOUND;
+        return ProjectedFileSystemNative.HResultFileNotFound;
     }
 
-    private int WriteData(IntPtr vCtx, ref Guid sid, byte[] data, ulong byteOffset, uint length)
+    private int WriteFileData(
+        IntPtr virtualizationContext, ref Guid dataStreamId,
+        byte[] data, ulong byteOffset, uint length)
     {
-        uint off   = (uint)byteOffset;
-        uint end   = off + length;
-        if (end > (uint)data.Length) end = (uint)data.Length;
-        uint count = end > off ? end - off : 0u;
-        if (count == 0) return Prj.S_OK;
+        uint startOffset = (uint)byteOffset;
+        uint endOffset = startOffset + length;
+        if (endOffset > (uint)data.Length)
+        {
+            endOffset = (uint)data.Length;
+        }
 
-        IntPtr buf = Prj.PrjAllocateAlignedBuffer(vCtx, new UIntPtr(count));
-        if (buf == IntPtr.Zero) return Prj.E_FAIL;
+        uint bytesToWrite = endOffset > startOffset ? endOffset - startOffset : 0u;
+        if (bytesToWrite == 0)
+        {
+            return ProjectedFileSystemNative.HResultOk;
+        }
+
+        IntPtr alignedBuffer = ProjectedFileSystemNative.PrjAllocateAlignedBuffer(
+            virtualizationContext, new UIntPtr(bytesToWrite));
+        if (alignedBuffer == IntPtr.Zero)
+        {
+            return ProjectedFileSystemNative.HResultFail;
+        }
+
         try
         {
-            Marshal.Copy(data, (int)off, buf, (int)count);
-            return Prj.PrjWriteFileData(vCtx, ref sid, buf, byteOffset, count);
+            Marshal.Copy(data, (int)startOffset, alignedBuffer, (int)bytesToWrite);
+            return ProjectedFileSystemNative.PrjWriteFileData(
+                virtualizationContext, ref dataStreamId, alignedBuffer, byteOffset, bytesToWrite);
         }
-        finally { Prj.PrjFreeAlignedBuffer(buf); }
+        finally
+        {
+            ProjectedFileSystemNative.PrjFreeAlignedBuffer(alignedBuffer);
+        }
     }
 
     // ---- Helpers ----
-    private string SrcPath(string rel)
+
+    private string GetSourcePath(string relativePath)
     {
-        return string.IsNullOrEmpty(rel) ? _sourceRoot : Path.Combine(_sourceRoot, rel);
+        return string.IsNullOrEmpty(relativePath)
+            ? _sourceRoot
+            : Path.Combine(_sourceRoot, relativePath);
     }
 
-    private static FileSystemInfo SrcFsi(string full)
+    // Returns true when either path equals or is nested inside the other.
+    // Comparison is ordinal case-insensitive on normalized full paths with a
+    // trailing separator, so "C:\Data" does not falsely match "C:\Database".
+    private static bool PathsOverlap(string firstPath, string secondPath)
     {
-        if (File.Exists(full))      return new FileInfo(full);
-        if (Directory.Exists(full)) return new DirectoryInfo(full);
+        if (string.IsNullOrEmpty(firstPath) || string.IsNullOrEmpty(secondPath))
+        {
+            return false;
+        }
+
+        string first = NormalizeForComparison(firstPath);
+        string second = NormalizeForComparison(secondPath);
+        return first.StartsWith(second, StringComparison.OrdinalIgnoreCase)
+            || second.StartsWith(first, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeForComparison(string path)
+    {
+        string fullPath = Path.GetFullPath(path)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return fullPath + Path.DirectorySeparatorChar;
+    }
+
+    private static FileSystemInfo GetSourceFileSystemInfo(string fullPath)
+    {
+        if (File.Exists(fullPath))
+        {
+            return new FileInfo(fullPath);
+        }
+
+        if (Directory.Exists(fullPath))
+        {
+            return new DirectoryInfo(fullPath);
+        }
+
         return null;
     }
 
-    private static DirEntry RealEntry(FileSystemInfo fsi)
+    private static DirEntry CreateRealEntry(FileSystemInfo fileSystemInfo)
     {
-        DirEntry e = new DirEntry();
-        e.Name             = fsi.Name;
-        bool isDir         = (fsi.Attributes & FileAttributes.Directory) != 0;
-        e.IsDirectory      = isDir;
-        e.FileSize         = isDir ? 0L : ((FileInfo)fsi).Length;
-        e.CreationTimeFt   = fsi.CreationTime.ToFileTime();
-        e.LastAccessTimeFt = fsi.LastAccessTime.ToFileTime();
-        e.LastWriteTimeFt  = fsi.LastWriteTime.ToFileTime();
-        e.FileAttributes   = (uint)fsi.Attributes & 0xFFFF;
-        return e;
+        DirEntry entry = new DirEntry();
+        entry.Name = fileSystemInfo.Name;
+        bool isDirectory = (fileSystemInfo.Attributes & FileAttributes.Directory) != 0;
+        entry.IsDirectory = isDirectory;
+        entry.FileSize = isDirectory ? 0L : ((FileInfo)fileSystemInfo).Length;
+        entry.CreationTimeFiletime = fileSystemInfo.CreationTime.ToFileTime();
+        entry.LastAccessTimeFiletime = fileSystemInfo.LastAccessTime.ToFileTime();
+        entry.LastWriteTimeFiletime = fileSystemInfo.LastWriteTime.ToFileTime();
+        entry.FileAttributes = (uint)fileSystemInfo.Attributes & 0xFFFF;
+        return entry;
     }
 
-    private static DirEntry SynthEntry(SyntheticEntry s)
+    private static DirEntry CreateSyntheticEntry(SyntheticEntry syntheticEntry)
     {
-        DirEntry e = new DirEntry();
-        e.Name             = s.Name;
-        e.IsSynthetic      = true;
-        e.IsDirectory      = s.IsDirectory;
-        e.FileSize         = s.IsDirectory ? 0L : s.FileSize;
-        long ft            = s.GetFiletime();
-        e.CreationTimeFt   = ft;
-        e.LastAccessTimeFt = ft;
-        e.LastWriteTimeFt  = ft;
-        e.FileAttributes   = s.IsDirectory ? 0x10u : 0x20u;
-        return e;
+        DirEntry entry = new DirEntry();
+        entry.Name = syntheticEntry.Name;
+        entry.IsSynthetic = true;
+        entry.IsDirectory = syntheticEntry.IsDirectory;
+        entry.FileSize = syntheticEntry.IsDirectory ? 0L : syntheticEntry.FileSize;
+        long filetime = syntheticEntry.GetFiletime();
+        entry.CreationTimeFiletime = filetime;
+        entry.LastAccessTimeFiletime = filetime;
+        entry.LastWriteTimeFiletime = filetime;
+        entry.FileAttributes = syntheticEntry.IsDirectory ? 0x10u : 0x20u;
+        return entry;
     }
 
-    private static bool NameExists(List<DirEntry> list, string name)
+    private static bool NameExists(List<DirEntry> entries, string name)
     {
-        foreach (DirEntry e in list)
-            if (string.Equals(e.Name, name, StringComparison.OrdinalIgnoreCase)) return true;
+        foreach (DirEntry entry in entries)
+        {
+            if (string.Equals(entry.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
         return false;
     }
 
-    private static void Log(string msg)
+    private static void Log(string message)
     {
         if (PhantomFSSettings.Verbose)
-            Console.WriteLine("  [" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " + msg);
+        {
+            Console.WriteLine("  [" + DateTime.Now.ToString("HH:mm:ss.fff") + "] " + message);
+        }
     }
 }
