@@ -25,9 +25,10 @@
 #define AppExeName   "PhantomFS.exe"
 #define AppGUID      "{{A3F7C2D1-84BE-4E9A-B0C5-123456789ABC}"
 
-; Default virtual root used by the post-install launch and the startup task.
-; Defined once here so the [Run] entry, the [Code] task creation, and the
-; directory-creation step cannot drift apart.
+; Default virtual root, pre-filled into the installer's Virtualization Path
+; page. The user can override it there; the chosen value then drives the
+; create-directory step, the post-install launch, and the scheduled task,
+; so all three always agree on one path.
 #define DefaultVirtRoot "C:\PhantomFS\Virtual"
 
 [Setup]
@@ -106,13 +107,21 @@ Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle
 ; -- Register EventLog source ---------------------------------------------
 Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle Hidden -Command ""if(-not [System.Diagnostics.EventLog]::SourceExists('PhantomFS')) {{ [System.Diagnostics.EventLog]::CreateEventSource('PhantomFS','Application') }}"""; Description: "Registering Windows Event Log source"; StatusMsg: "Registering Event Log source..."; Flags: runhidden waituntilterminated
 
-; -- Create default virtual root -------------------------------------------
-Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -Command ""New-Item -ItemType Directory -Force -Path '{#DefaultVirtRoot}' | Out-Null"""; Description: "Creating default virtual root directory"; Flags: runhidden waituntilterminated
+; NOTE: The default virtual root directory is created from [Code]
+; (CurStepChanged, ssPostInstall) instead of here, because it needs the
+; virtualization path the user chose on the custom wizard page and must
+; exist before the launch entry below runs.
 
 ; -- Launch PhantomFS after install (optional) -----------------------------
-; Interactive post-install launch: no --service here, this runs in the
-; installing user's session where a console/desktop exists.
-Filename: "{app}\{#AppExeName}"; Parameters: "--syntheticonly --virtroot ""{#DefaultVirtRoot}"""; Description: "Launch PhantomFS now"; Flags: nowait postinstall skipifsilent
+; This is the "Launch PhantomFS now" checkbox on the Finished page.
+; postinstall entries run after the user clicks Finish, so the directory
+; created in CurStepChanged already exists by the time this fires.
+; {code:GetVirtRootParam} reads the path from the wizard page at run time,
+; since [Run] Parameters cannot embed a Pascal value directly, but can call
+; into [Code] through the {code:...} constant.
+; No --service here, this launches interactively in the installing user's
+; own session, where a console/desktop exists.
+Filename: "{app}\{#AppExeName}"; Parameters: "--syntheticonly --virtroot ""{code:GetVirtRootParam}"""; Description: "Launch PhantomFS now"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
 ; Stop any running PhantomFS instances gracefully before uninstall.
@@ -127,6 +136,12 @@ Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle
 [Code]
 // -- Inno Setup Pascal code -------------------------------------------------
 
+// Custom wizard page holding the virtualization path input. Declared at
+// module scope so CreateVirtRootPage (which builds it) and GetVirtRoot
+// (which reads it) can both reach it.
+var
+  VirtRootPage: TInputDirWizardPage;
+
 // Reads the OS build number from the registry. Defined before
 // InitializeSetup below since Inno's Pascal Script has no forward
 // declarations, a function must appear before its first use in the file.
@@ -139,6 +154,36 @@ begin
        'SOFTWARE\Microsoft\Windows NT\CurrentVersion',
        'CurrentBuildNumber', S) then
     Result := StrToIntDef(S, 0);
+end;
+
+// Returns the virtualization path the user entered, trimmed of surrounding
+// whitespace and any trailing backslash. Falls back to the compile-time
+// default if the page has not been created yet (e.g. a silent install that
+// skipped the wizard) or the field was left blank.
+function GetVirtRoot(): String;
+begin
+  if VirtRootPage <> nil then
+    Result := Trim(VirtRootPage.Values[0])
+  else
+    Result := '';
+
+  if Result = '' then
+    Result := '{#DefaultVirtRoot}';
+
+  // Strip a single trailing backslash so path joins downstream are clean.
+  if (Length(Result) > 0) and (Result[Length(Result)] = '\') then
+    Result := Copy(Result, 1, Length(Result) - 1);
+end;
+
+// Wrapper for GetVirtRoot with the single-String-parameter signature that
+// the {code:...} constant requires. Used by the [Run] Parameters field for
+// the "Launch PhantomFS now" checkbox, since [Run] cannot call a Pascal
+// function directly except through this constant form. Param is unused;
+// Inno always passes it, empty here since {code:GetVirtRootParam} has no
+// colon-separated argument.
+function GetVirtRootParam(Param: String): String;
+begin
+  Result := GetVirtRoot();
 end;
 
 // Checks for Windows 10 v1809 (Build 17763) or later.
@@ -155,6 +200,29 @@ begin
       mbError, MB_OK);
     Result := False;
   end;
+end;
+
+// Builds the custom "Virtualization Path" wizard page. Placed after the
+// welcome/license pages and before "Select Additional Tasks" so the user
+// sets the path before choosing whether to create the startup task that
+// depends on it. TInputDirWizardPage gives a labelled input box plus a
+// Browse button and folder validation for free.
+procedure InitializeWizard();
+begin
+  VirtRootPage := CreateInputDirPage(
+    wpSelectTasks,
+    'Virtualization Path',
+    'Where should PhantomFS project its virtual honeypot files?',
+    'PhantomFS will create and monitor its virtual files under the folder'
+      + ' below. This path is used both for the post-install launch and for'
+      + ' the scheduled startup task, if you choose to create one.'
+      + #13#10#13#10
+      + 'It should be a dedicated, empty (or not-yet-existing) folder, not a'
+      + ' directory that already holds real data.',
+    False,      // not "append app name"
+    '');        // no new-folder name
+  VirtRootPage.Add('');
+  VirtRootPage.Values[0] := ExpandConstant('{#DefaultVirtRoot}');
 end;
 
 // Xml-escape a string for embedding in the task definition below.
@@ -241,7 +309,12 @@ begin
     '</Task>' + #13#10;
 end;
 
-// Register the startup scheduled task if the user chose that option.
+// Post-install actions that depend on the chosen virtualization path:
+//   1. create the virtual root directory
+//   2. register the startup scheduled task, if selected
+// The interactive "Launch PhantomFS now" step is handled separately by the
+// [Run] postinstall entry via GetVirtRootParam, since it belongs on the
+// Finished page checkbox rather than firing unconditionally here.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -249,14 +322,23 @@ var
   WorkDir: String;
   XmlPath: String;
   TaskXml: String;
+  VirtRoot: String;
 begin
   if CurStep = ssPostInstall then
   begin
+    VirtRoot := GetVirtRoot();
+    ExePath  := ExpandConstant('{app}\PhantomFS.exe');
+    WorkDir  := ExpandConstant('{app}');
+
+    // 1. Create the virtual root directory. Must happen here (before the
+    // Finished page) so it exists by the time the postinstall launch entry
+    // runs, since that entry fires after CurStep reaches ssDone.
+    ForceDirectories(VirtRoot);
+
+    // 2. Startup scheduled task, if the user ticked it.
     if IsTaskSelected('startuptask') then
     begin
-      ExePath := ExpandConstant('{app}\PhantomFS.exe');
-      WorkDir := ExpandConstant('{app}');
-      TaskXml := BuildTaskXml(ExePath, WorkDir, '{#DefaultVirtRoot}');
+      TaskXml := BuildTaskXml(ExePath, WorkDir, VirtRoot);
 
       // Task Scheduler expects the imported XML as UTF-16. Inno Setup 6 is
       // Unicode-only, so SaveStringToFile writes UTF-16LE with a BOM, which
