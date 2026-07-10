@@ -174,16 +174,6 @@ Open **Event Viewer → Windows Logs → Application** and filter by source `Pha
 
 PhantomFS ships a workflow at `.github/workflows/build.yml` that compiles for **x64** and **ARM64** in parallel, and publishes a GitHub Release on every version tag.
 
-### Triggering a release
-
-The workflow runs manually from the Actions tab. Set the **version** input and tick **Publish a GitHub Release** to cut a release in one step:
-
-```powershell
-git tag v1.1.0
-git push origin v1.1.0
-```
-
-Release assets will be named `PhantomFS-v1.1.0-x64.zip`.
 
 ---
 
@@ -209,14 +199,6 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
 - **Air-gapped segment** — set `resolveRemoteIPs=false` to skip DNS in environments where external lookups are blocked; the NetBIOS machine name is still captured
 
 ---
-
-## Roadmap
-
-- [ ] SIEM / syslog forwarding (CEF format)
-- [ ] EVTX → JSON webhook (Teams / Slack integration)
-- [ ] Configurable alert email via SMTP
-- [ ] Auto-block via Windows Firewall on alert
-- [ ] GUI management console
 
 
 ---
