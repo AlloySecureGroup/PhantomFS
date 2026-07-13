@@ -1,0 +1,1261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PhantomFS Case Builder</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ==========================================================================
+   PhantomFS Case Builder - visual system
+   bg #0A0A0A, panel #131313, red #E1262C (signal / alloy accent),
+   white #F5F5F5, steel #C9CBCE (secondary neutral)
+   ========================================================================== */
+
+@font-face {
+  font-family: 'Space Grotesk';
+  src: local('Space Grotesk');
+}
+
+:root {
+  --bg: #0A0A0A;
+  --panel: #131313;
+  --panel-2: #1A1A1A;
+  --line: #2E2E2E;
+  --line-soft: #232323;
+  --text: #F5F5F5;
+  --muted: #A3A3A3;
+  --muted-2: #6B6B6B;
+  --red: #E1262C;
+  --red-dim: #7A1216;
+  --steel: #C9CBCE;
+
+  --font-display: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  background-image:
+    radial-gradient(ellipse 900px 500px at 15% -10%, rgba(225,38,44,0.06), transparent),
+    radial-gradient(ellipse 700px 500px at 100% 10%, rgba(245,245,245,0.04), transparent);
+}
+
+a { color: var(--red); }
+
+.wrap {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 28px 96px;
+}
+
+/* ---------- header ---------- */
+header.hero {
+  padding: 72px 0 40px;
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: var(--red);
+  text-transform: uppercase;
+  margin-bottom: 22px;
+}
+
+.eyebrow::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  background: var(--red);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(225,38,44,0.35);
+}
+
+h1.title {
+  font-family: var(--font-display);
+  font-size: 56px;
+  line-height: 1.02;
+  letter-spacing: -0.015em;
+  margin: 0 0 18px;
+  font-weight: 600;
+}
+
+h1.title em {
+  font-style: normal;
+  color: var(--red);
+}
+
+.subtitle {
+  font-size: 17px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 620px;
+  margin: 0;
+}
+
+.tripwire {
+  height: 1px;
+  margin: 44px 0;
+  background-image: repeating-linear-gradient(
+    to right, var(--red-dim) 0, var(--red-dim) 8px, transparent 8px, transparent 16px
+  );
+  opacity: 0.6;
+}
+
+/* ---------- section labels ---------- */
+.section-label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-label .n { color: var(--red); }
+
+/* ---------- industry grid ---------- */
+.industry-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.industry-card {
+  position: relative;
+  text-align: left;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 18px 18px 16px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.1s ease;
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 12px;
+}
+
+.industry-card:hover {
+  border-color: var(--muted-2);
+  background: var(--panel-2);
+}
+
+.industry-card.selected {
+  border-color: var(--red);
+  background: linear-gradient(180deg, rgba(225,38,44,0.14), rgba(225,38,44,0.02));
+}
+
+.industry-card:active { transform: scale(0.994); }
+
+.industry-num {
+  grid-row: 1;
+  grid-column: 1;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-2);
+  align-self: start;
+  margin-top: 2px;
+}
+
+.industry-icon {
+  grid-row: 1;
+  grid-column: 1;
+  display: none;
+}
+
+.industry-name {
+  grid-row: 1;
+  grid-column: 2;
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.industry-tagline {
+  grid-row: 2;
+  grid-column: 2;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-top: 6px;
+}
+
+.industry-card.selected .industry-name { color: var(--red); }
+
+/* ---------- preview panel ---------- */
+.preview-panel {
+  margin-top: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+  opacity: 0.4;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.preview-panel.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.preview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+
+.preview-head h3 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.preview-head .count {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tree-preview {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 16px 20px 20px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  color: var(--text);
+}
+
+.tree-row.is-dir {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.tree-row .glyph {
+  color: var(--muted-2);
+  font-size: 10px;
+  width: 10px;
+}
+
+.tree-row .fname { flex: 0 0 auto; }
+
+.tree-row .trap {
+  color: var(--red);
+  font-size: 9px;
+  margin-left: 2px;
+}
+
+.tree-row .size {
+  margin-left: auto;
+  color: var(--muted-2);
+  font-size: 11.5px;
+}
+
+/* ---------- settings ---------- */
+.settings-panel {
+  margin-top: 28px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 20px;
+}
+
+.settings-row-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px 20px;
+}
+
+.setting-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px dashed var(--line-soft);
+}
+
+.setting-item label {
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.setting-item .hint {
+  display: block;
+  font-size: 11.5px;
+  color: var(--muted-2);
+  margin-top: 2px;
+}
+
+.switch {
+  position: relative;
+  width: 38px;
+  height: 22px;
+  flex: 0 0 auto;
+}
+
+.switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch .slider {
+  position: absolute;
+  inset: 0;
+  background: var(--line);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.switch .slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 3px;
+  top: 3px;
+  background: var(--muted);
+  border-radius: 50%;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.switch input:checked + .slider { background: rgba(225,38,44,0.3); }
+.switch input:checked + .slider::before {
+  transform: translateX(16px);
+  background: var(--red);
+}
+
+.advanced-toggle {
+  margin-top: 14px;
+  background: none;
+  border: none;
+  color: var(--steel);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.advanced-toggle::after {
+  content: '\25BE';
+  font-size: 10px;
+  transition: transform 0.15s ease;
+}
+
+.advanced-toggle[aria-expanded="true"]::after { transform: rotate(180deg); }
+
+.advanced-settings {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease;
+}
+
+.advanced-settings.open { max-height: 260px; margin-top: 14px; }
+
+.advanced-settings .setting-item input[type="number"] {
+  width: 84px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+
+/* ---------- generate ---------- */
+.generate-row {
+  margin-top: 32px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.download-btn {
+  background: var(--red);
+  color: #F5F5F5;
+  border: none;
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: 15px;
+  padding: 15px 26px;
+  border-radius: 9px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  transition: transform 0.1s ease, box-shadow 0.15s ease;
+  box-shadow: 0 0 0 0 rgba(225,38,44,0.45);
+}
+
+.download-btn:not(:disabled):hover {
+  box-shadow: 0 0 0 6px rgba(225,38,44,0.18);
+}
+
+.download-btn:active:not(:disabled) { transform: scale(0.98); }
+
+.download-btn:disabled {
+  background: var(--panel-2);
+  color: var(--muted-2);
+  cursor: not-allowed;
+}
+
+.download-status {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--steel);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.download-status.show { opacity: 1; }
+
+.filename-preview {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--muted-2);
+}
+
+/* ---------- footer ---------- */
+footer {
+  margin-top: 72px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted-2);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+footer strong { color: var(--muted); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 720px) {
+  .wrap { padding: 0 18px 72px; }
+  header.hero { padding: 48px 0 32px; }
+  h1.title { font-size: 38px; }
+  .industry-grid { grid-template-columns: 1fr; }
+  .settings-row-grid { grid-template-columns: 1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">Synthetic Bait Generator</div>
+    <h1 class="title">Set the trap.<br><em>Pick the disguise.</em></h1>
+    <p class="subtitle">
+      Choose an industry and this builds a ready-to-drop <strong>PhantomFS.exe.config</strong> -
+      a virtual file tree of credentials, financials, and confidential documents
+      that don't exist until someone opens them. The moment they do, PhantomFS logs it.
+    </p>
+  </header>
+
+  <div class="tripwire"></div>
+
+  <section>
+    <div class="section-label"><span class="n">01</span> Choose an industry profile</div>
+    <div class="industry-grid" id="industryGrid"></div>
+  </section>
+
+  <section class="preview-panel" id="previewPanel">
+    <div class="preview-head">
+      <h3 id="previewIndustryName">No profile selected</h3>
+      <span class="count" id="previewFileCount"></span>
+    </div>
+    <div class="tree-preview" id="treePreview"></div>
+  </section>
+
+  <section class="settings-panel">
+    <div class="section-label"><span class="n">02</span> Alert &amp; cleanup behavior</div>
+
+    <div class="settings-row-grid">
+      <div class="setting-item">
+        <label for="alertOnRead">Alert on read
+          <span class="hint">Fires when bait content is actually opened</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="alertOnRead" checked><span class="slider"></span></label>
+      </div>
+
+      <div class="setting-item">
+        <label for="alertOnOpen">Alert on open
+          <span class="hint">Fires as soon as the placeholder is touched</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="alertOnOpen" checked><span class="slider"></span></label>
+      </div>
+
+      <div class="setting-item">
+        <label for="enableToast">Toast notification
+          <span class="hint">Desktop popup on trigger</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="enableToast" checked><span class="slider"></span></label>
+      </div>
+
+      <div class="setting-item">
+        <label for="enableEventLog">Windows Event Log
+          <span class="hint">Writes an event for SIEM pickup</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="enableEventLog" checked><span class="slider"></span></label>
+      </div>
+
+      <div class="setting-item">
+        <label for="resolveRemoteIPs">Resolve remote IPs
+          <span class="hint">DNS lookup for SMB access source</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="resolveRemoteIPs" checked><span class="slider"></span></label>
+      </div>
+
+      <div class="setting-item">
+        <label for="autoCleanupEnabled">Auto-revert after hydration
+          <span class="hint">Re-arms the trap after each trigger</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="autoCleanupEnabled" checked><span class="slider"></span></label>
+      </div>
+    </div>
+
+    <button type="button" class="advanced-toggle" id="advancedToggle" aria-expanded="false">
+      Advanced timing
+    </button>
+
+    <div class="advanced-settings" id="advancedSettings">
+      <div class="setting-item">
+        <label for="toastCooldownSeconds">Toast cooldown (seconds)
+          <span class="hint">Suppress repeat alerts for the same file</span>
+        </label>
+        <input type="number" id="toastCooldownSeconds" value="15" min="0">
+      </div>
+      <div class="setting-item">
+        <label for="autoCleanupDelaySeconds">Re-arm delay (seconds)
+          <span class="hint">Wait before reverting a hydrated file</span>
+        </label>
+        <input type="number" id="autoCleanupDelaySeconds" value="300" min="30">
+      </div>
+      <div class="setting-item">
+        <label for="verbose">Verbose logging
+          <span class="hint">Detailed ProjFS callback trace</span>
+        </label>
+        <label class="switch"><input type="checkbox" id="verbose"><span class="slider"></span></label>
+      </div>
+    </div>
+  </section>
+
+  <div class="generate-row">
+    <button type="button" class="download-btn" id="downloadBtn" disabled>
+      Download PhantomFS.exe.config
+    </button>
+    <span class="filename-preview">saves to your Downloads folder</span>
+    <span class="download-status" id="downloadStatus"></span>
+  </div>
+
+  <footer>
+    <strong>All content here is synthetic.</strong> Filenames, credentials, and document
+    bodies are placeholder bait modeled on plausible naming for the chosen industry - no
+    real keys, records, or personal data are generated or stored. Drop the resulting
+    <code>.exe.config</code> next to <code>PhantomFS.exe</code> and restart the provider;
+    no recompile needed.
+  </footer>
+
+</div>
+<script>
+/* ==========================================================================
+   PhantomFS Case Builder
+   Generates a PhantomFS.exe.config honeytoken manifest for a chosen
+   industry profile. Everything below is synthetic bait content -
+   no real credentials, no real personal data.
+   ========================================================================== */
+
+const ICONS = {
+  building: '<path d="M4 21V6l7-3v18M4 21h16M11 3l7 3v15M8 9h.01M8 12h.01M8 15h.01M8 18h.01M15 9h.01M15 12h.01M15 15h.01M15 18h.01"/>',
+  retail: '<path d="M3 9l1-5h16l1 5M3 9h18M3 9v11h18V9M8 13a2 2 0 1 0 4 0M14 13a2 2 0 1 0 4 0"/>',
+  finance: '<path d="M12 2v20M17 5H9.5a2.5 2.5 0 0 0 0 5H14a2.5 2.5 0 0 1 0 5H6"/>',
+  legal: '<path d="M12 3v3M5 8l4-2 3 6-4 2zM19 8l-4-2-3 6 4 2zM5 14l-2 4a3 3 0 0 0 6 0l-2-4M19 14l2 4a3 3 0 0 1-6 0l2-4M12 6v15M8 21h8"/>',
+  nonprofit: '<path d="M12 21s-7-4.35-9.5-8.5C.7 9 2 5.5 5.4 5.5c2 0 3.3 1.2 4 2.3.7-1.1 2-2.3 4-2.3 3.4 0 4.7 3.5 2.9 7C19 16.65 12 21 12 21z"/>',
+  tech: '<path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3M6 6h12v12H6z"/>',
+  medical: '<path d="M12 6v12M6 12h12M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>',
+  education: '<path d="M12 3l10 5-10 5L2 8l10-5zM4 10.5V16c0 .8 3.6 3 8 3s8-2.2 8-3v-5.5"/>',
+  manufacturing: '<path d="M3 21V11l5 3v-3l5 3V8l6-4v17H3zM7 17h.01M11 17h.01"/>',
+  defense: '<path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5l8-3z"/>'
+};
+
+function svgIcon(name) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</svg>`;
+}
+
+/* -------------------------------------------------------------------------
+   Shared fallback templates - used by extension when no filename matches.
+   Identical philosophy across every industry: plausible envelope,
+   zero real secrets, clear synthetic marker where format allows.
+   ------------------------------------------------------------------------- */
+const SHARED_TEMPLATES = [
+  {
+    ext: '.pdf',
+    content:
+`%PDF-1.4
+1 0 obj
+<</Type /Catalog /Pages 2 0 R>>
+endobj
+2 0 obj
+<</Type /Pages /Kids [3 0 R] /Count 1>>
+endobj
+3 0 obj
+<</Type /Page /MediaBox [0 0 612 792] /Parent 2 0 R
+/Resources <</Font <</F1 <</Type /Font /Subtype /Type1 /BaseFont /Helvetica>>>>>>
+/Contents 4 0 R>>
+endobj
+4 0 obj
+<</Length 192>>
+stream
+BT
+/F1 22 Tf
+72 700 Td
+(CONFIDENTIAL) Tj
+0 -36 Td
+/F1 11 Tf
+(This document contains sensitive information.) Tj
+0 -20 Td
+(Access is monitored and logged.) Tj
+0 -20 Td
+(Authorised personnel only.) Tj
+ET
+endstream
+endobj
+xref
+0 5
+0000000000 65535 f
+0000000009 00000 n
+0000000058 00000 n
+0000000115 00000 n
+0000000296 00000 n
+trailer
+<</Size 5 /Root 1 0 R>>
+startxref
+542
+%%EOF`
+  },
+  {
+    ext: '.docx',
+    content:
+`<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:w="urn:schemas-microsoft-com:office:word"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<title>CONFIDENTIAL</title>
+<!--[if gte mso 9]>
+<xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml>
+<![endif]-->
+<style>
+  @page { margin: 2.5cm; }
+  body  { font-family: Calibri, sans-serif; font-size: 11pt; line-height: 1.5; }
+  h1    { font-size: 16pt; color: #C00000; border-bottom: 2px solid #C00000; padding-bottom: 6pt; }
+  h2    { font-size: 13pt; color: #1F3864; margin-top: 18pt; }
+  .meta { color: #555; font-size: 9pt; margin-bottom: 18pt; }
+  .watermark { color: #C00000; font-size: 9pt; font-weight: bold; letter-spacing: 2px; }
+</style>
+</head>
+<body>
+<p class="watermark">&#x25CF; CONFIDENTIAL &#x25CF; DO NOT DISTRIBUTE &#x25CF;</p>
+<h1>CONFIDENTIAL</h1>
+<p class="meta"><strong>Classification:</strong> Restricted &nbsp;&nbsp;<strong>Document ID:</strong> CONF-{{RANDID}}</p>
+<h2>1. Summary</h2>
+<p>This document contains proprietary information for authorised personnel only.
+Unauthorised access, reproduction, or distribution is strictly prohibited.</p>
+<h2>2. Access Terms</h2>
+<p>By opening this document you confirm that you are an authorised recipient.
+Access to this document is monitored. Any unauthorised disclosure must be
+reported immediately.</p>
+<p style="font-size:8pt;color:#999;margin-top:36pt">PhantomFS Synthetic Document - Access Logged</p>
+</body>
+</html>`
+  },
+  {
+    ext: '.xlsx',
+    content:
+`<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:x="urn:schemas-microsoft-com:office:excel"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<!--[if gte mso 9]>
+<xml><x:ExcelWorkbook><x:ExcelWorksheets>
+<x:ExcelWorksheet><x:Name>Sheet1</x:Name>
+<x:WorksheetOptions><x:DisplayGridlines/></x:WorksheetOptions>
+</x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook></xml>
+<![endif]-->
+<style>
+  body { font-family: Calibri, sans-serif; font-size: 11pt; }
+  th   { background: #1F3864; color: #FFFFFF; padding: 6px 12px; text-align: left; }
+  td   { padding: 5px 12px; border-bottom: 1px solid #D9D9D9; }
+  tr:nth-child(even) td { background: #EEF2F7; }
+</style>
+</head>
+<body>
+<h2 style="color:#C00000">CONFIDENTIAL - AUTHORIZED ACCESS ONLY</h2>
+<p>Classification: Restricted</p>
+<table border="0" cellspacing="0" cellpadding="0">
+<tr><th>Field A</th><th>Field B</th><th>Field C</th><th>Amount</th></tr>
+<tr><td>Row 1</td><td>Reference-{{RANDID}}</td><td>Active</td><td>$42,500</td></tr>
+<tr><td>Row 2</td><td>Reference-{{RANDID}}</td><td>Active</td><td>$118,200</td></tr>
+<tr><td>Row 3</td><td>Reference-{{RANDID}}</td><td>Pending</td><td>$6,750</td></tr>
+</table>
+<p style="font-size:8pt;color:#999">PhantomFS Synthetic Document - Access Logged</p>
+</body>
+</html>`
+  },
+  {
+    ext: '.csv',
+    content:
+`id,name,email,department,access_level
+1,admin,admin@example.com,IT,superadmin
+2,deploy,deploy@example.com,Operations,admin
+3,backup,backup@example.com,Operations,read-only`
+  },
+  {
+    ext: '.txt',
+    content:
+`CONFIDENTIAL
+This file contains sensitive information.
+Access is monitored and logged.
+Authorised personnel only.`
+  },
+  {
+    ext: '.json',
+    content:
+`{
+  "synthetic": true,
+  "generator": "PhantomFS",
+  "note": "This is a honeypot file. Access has been logged."
+}`
+  },
+  { ext: '.pem', type: 'pem', pemLabel: 'PRIVATE KEY' },
+  { ext: '.ovpn',
+    content:
+`client
+dev tun
+proto udp
+remote vpn.example.com 1194
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+remote-cert-tls server
+cipher AES-256-GCM
+verb 3
+
+<ca>
+-----BEGIN CERTIFICATE-----
+EXAMPLESYNTHETICCERTIFICATEDATANOTAREALKEY0123456789ABCDEFGHIJ
+-----END CERTIFICATE-----
+</ca>`
+  }
+];
+
+/* -------------------------------------------------------------------------
+   Industry profiles
+   files:      virtual tree entries -> { path, dir(bool), size, age (days) }
+   templates:  filename-specific bait content, overrides SHARED_TEMPLATES
+   ------------------------------------------------------------------------- */
+const INDUSTRIES = [
+  {
+    id: 'construction',
+    icon: 'building',
+    label: 'Building, Construction, Architecture',
+    tagline: 'Bid packages, subcontractor pricing, project financials.',
+    files: [
+      { path: '\\Bids', dir: true, size: 0, age: 100 },
+      { path: '\\Bids\\Confidential_Bid_ProjectX.pdf', size: 8192, age: 40 },
+      { path: '\\Bids\\Subcontractor_Pricing_2024.xlsx', size: 4096, age: 55 },
+      { path: '\\Contracts', dir: true, size: 0, age: 110 },
+      { path: '\\Contracts\\Master_Service_Agreement_Draft.docx', size: 6144, age: 70 },
+      { path: '\\Contracts\\Client_NDA_Signed.pdf', size: 5120, age: 90 },
+      { path: '\\Financials', dir: true, size: 0, age: 60 },
+      { path: '\\Financials\\Project_Cost_Estimates_Confidential.xlsx', size: 3840, age: 30 },
+      { path: '\\Financials\\Payroll_Export_2024.csv', size: 512, age: 20 },
+      { path: '\\Credentials', dir: true, size: 0, age: 100 },
+      { path: '\\Credentials\\procore_api_key.txt', size: 96, age: 15 },
+      { path: '\\Credentials\\autodesk_license.json', size: 256, age: 60 },
+      { path: '\\Credentials\\site_vpn_config.ovpn', size: 1024, age: 80 }
+    ],
+    templates: [
+      { name: 'procore_api_key.txt', content: 'PROCORE_CLIENT_ID=EXAMPLE1a2b3c4d5e6f7g8h\nPROCORE_CLIENT_SECRET=EXAMPLEsk_9z8y7x6w5v4u3t2s1r\nCompany: Example General Contracting LLC' },
+      { name: 'autodesk_license.json', content: '{\n  "product": "AutoCAD / BIM 360",\n  "seat_count": 24,\n  "license_key": "EXAMPLE-000-11111111",\n  "org_id": "EXAMPLE-ORG-4471"\n}' }
+    ]
+  },
+  {
+    id: 'retail',
+    icon: 'retail',
+    label: 'Retail, Restaurant, Small Business',
+    tagline: 'POS credentials, customer lists, payroll exports.',
+    files: [
+      { path: '\\POS', dir: true, size: 0, age: 90 },
+      { path: '\\POS\\square_api_keys.json', size: 312, age: 25 },
+      { path: '\\POS\\merchant_processor_credentials.txt', size: 128, age: 40 },
+      { path: '\\Financials', dir: true, size: 0, age: 70 },
+      { path: '\\Financials\\Payroll_2024.xlsx', size: 3584, age: 35 },
+      { path: '\\Financials\\Bank_Statements_Q4.pdf', size: 6144, age: 15 },
+      { path: '\\Customer Data', dir: true, size: 0, age: 80 },
+      { path: '\\Customer Data\\loyalty_program_export.csv', size: 2048, age: 50 },
+      { path: '\\Customer Data\\customer_emails.csv', size: 1536, age: 65 },
+      { path: '\\Credentials', dir: true, size: 0, age: 60 },
+      { path: '\\Credentials\\wifi_passwords.txt', size: 64, age: 10 },
+      { path: '\\Credentials\\quickbooks_login.txt', size: 96, age: 45 }
+    ],
+    templates: [
+      { name: 'square_api_keys.json', content: '{\n  "application_id": "sandbox-sq0idb-EXAMPLE1234567890",\n  "access_token": "EACAlEXAMPLEabcdefghijklmnopqrstuvwxyz",\n  "location_id": "EXAMPLELOC01"\n}' },
+      { name: 'wifi_passwords.txt', content: 'Guest-WiFi: Welcome2024!\nBackOffice-WiFi: St0ckR00m#42\nPOS-Network: T3rminal-Secure9' }
+    ]
+  },
+  {
+    id: 'financial',
+    icon: 'finance',
+    label: 'Financial, CPA',
+    tagline: 'Client tax records, wire instructions, audit reports.',
+    files: [
+      { path: '\\Client Files', dir: true, size: 0, age: 90 },
+      { path: '\\Client Files\\Client_Tax_Returns_2024.pdf', size: 9216, age: 20 },
+      { path: '\\Client Files\\Client_SSN_List.xlsx', size: 2048, age: 30 },
+      { path: '\\Banking', dir: true, size: 0, age: 40 },
+      { path: '\\Banking\\Wire_Transfer_Instructions.docx', size: 4096, age: 12 },
+      { path: '\\Banking\\ACH_Batch_File.csv', size: 1024, age: 8 },
+      { path: '\\Credentials', dir: true, size: 0, age: 70 },
+      { path: '\\Credentials\\quickbooks_admin.txt', size: 96, age: 50 },
+      { path: '\\Credentials\\irs_efile_credentials.txt', size: 128, age: 55 },
+      { path: '\\Compliance', dir: true, size: 0, age: 100 },
+      { path: '\\Compliance\\SOC2_Audit_Report_Confidential.pdf', size: 10240, age: 90 }
+    ],
+    templates: [
+      { name: 'irs_efile_credentials.txt', content: 'EFIN: EXAMPLE123456\nETIN: EX1234\nSoftware ID: EXAMPLE-SW-9981\nFirm: Example Tax & Advisory LLC' },
+      { name: 'quickbooks_admin.txt', content: 'Company File: ExampleFirm_2024.qbw\nAdmin User: admin\nAdmin Password: QB-Admin-EXAMPLE22\nCompany ID: EXAMPLE-QBO-77120' }
+    ]
+  },
+  {
+    id: 'legal',
+    icon: 'legal',
+    label: 'Legal Firm',
+    tagline: 'Privileged memos, trust ledgers, settlement drafts.',
+    files: [
+      { path: '\\Case Files', dir: true, size: 0, age: 80 },
+      { path: '\\Case Files\\Settlement_Agreement_Draft.docx', size: 5120, age: 15 },
+      { path: '\\Case Files\\Client_Privileged_Memo.docx', size: 3072, age: 25 },
+      { path: '\\Financials', dir: true, size: 0, age: 60 },
+      { path: '\\Financials\\Trust_Account_Ledger.xlsx', size: 4096, age: 40 },
+      { path: '\\Financials\\Client_Invoices_2024.pdf', size: 6144, age: 30 },
+      { path: '\\Credentials', dir: true, size: 0, age: 90 },
+      { path: '\\Credentials\\clio_api_key.txt', size: 96, age: 60 },
+      { path: '\\Credentials\\pacer_login.txt', size: 96, age: 70 },
+      { path: '\\Documents', dir: true, size: 0, age: 50 },
+      { path: '\\Documents\\Merger_NDA.pdf', size: 8192, age: 20 }
+    ],
+    templates: [
+      { name: 'clio_api_key.txt', content: 'CLIO_CLIENT_ID=EXAMPLEid_9f8e7d6c\nCLIO_CLIENT_SECRET=EXAMPLEsecret_5b4a3c2d1e\nFirm: Example & Associates LLP' },
+      { name: 'pacer_login.txt', content: 'PACER Username: efiler_example\nPACER Password: Pacer-EXAMPLE-91\nClient Code: EX-LIT-2024' }
+    ]
+  },
+  {
+    id: 'nonprofit',
+    icon: 'nonprofit',
+    label: 'Non-Profit',
+    tagline: 'Donor databases, grant budgets, board financials.',
+    files: [
+      { path: '\\Donors', dir: true, size: 0, age: 90 },
+      { path: '\\Donors\\Donor_Database_Export.csv', size: 3072, age: 30 },
+      { path: '\\Donors\\Major_Donor_List_Confidential.xlsx', size: 2048, age: 45 },
+      { path: '\\Grants', dir: true, size: 0, age: 70 },
+      { path: '\\Grants\\Grant_Application_Budget.xlsx', size: 4096, age: 60 },
+      { path: '\\Financials', dir: true, size: 0, age: 100 },
+      { path: '\\Financials\\Board_Financial_Report.pdf', size: 5120, age: 90 },
+      { path: '\\Financials\\Bank_Account_Details.docx', size: 1024, age: 15 },
+      { path: '\\Credentials', dir: true, size: 0, age: 60 },
+      { path: '\\Credentials\\donor_cms_login.txt', size: 96, age: 20 },
+      { path: '\\Credentials\\stripe_nonprofit_keys.txt', size: 312, age: 25 }
+    ],
+    templates: [
+      { name: 'stripe_nonprofit_keys.txt', content: 'Publishable Key:\npk_live_EXAMPLE1234567890abcdefghijklmno\n\nSecret Key:\nsk_live_EXAMPLE1234567890abcdefghijklmno' },
+      { name: 'donor_cms_login.txt', content: 'Platform: Bloomerang\nUsername: dev_admin\nPassword: Donor-CMS-EXAMPLE7\nOrg ID: EXAMPLE-NP-3391' }
+    ]
+  },
+  {
+    id: 'technology',
+    icon: 'tech',
+    label: 'Technology Firm',
+    tagline: 'Cloud keys, SSH keys, source secrets, term sheets.',
+    files: [
+      { path: '\\AWS', dir: true, size: 0, age: 130 },
+      { path: '\\AWS\\credentials', size: 116, age: 90 },
+      { path: '\\AWS\\config', size: 94, age: 110 },
+      { path: '\\AWS\\iam_access_keys.csv', size: 198, age: 20 },
+      { path: '\\SSH Keys', dir: true, size: 0, age: 140 },
+      { path: '\\SSH Keys\\id_rsa', size: 1675, age: 100 },
+      { path: '\\SSH Keys\\id_rsa.pub', size: 381, age: 100 },
+      { path: '\\SSH Keys\\id_ed25519', size: 411, age: 60 },
+      { path: '\\API Keys', dir: true, size: 0, age: 30 },
+      { path: '\\API Keys\\api_keys.json', size: 847, age: 12 },
+      { path: '\\API Keys\\github_pat.txt', size: 93, age: 45 },
+      { path: '\\Source Code', dir: true, size: 0, age: 50 },
+      { path: '\\Source Code\\production.env', size: 512, age: 10 },
+      { path: '\\Documents', dir: true, size: 0, age: 45 },
+      { path: '\\Documents\\Series_B_Term_Sheet.pdf', size: 7168, age: 45 }
+    ],
+    templates: [
+      { name: 'credentials', content: '[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' },
+      { name: 'production.env', content: 'DATABASE_URL=postgres://admin:EXAMPLEpass@db.internal:5432/prod\nJWT_SECRET=EXAMPLEsecret_do_not_use_in_real_systems\nSTRIPE_SECRET_KEY=sk_live_EXAMPLE1234567890abcdefgh' },
+      { name: 'id_rsa', type: 'pem', pemLabel: 'RSA PRIVATE KEY' },
+      { name: 'id_ed25519', type: 'pem', pemLabel: 'OPENSSH PRIVATE KEY' }
+    ]
+  },
+  {
+    id: 'medical',
+    icon: 'medical',
+    label: 'Medical Office',
+    tagline: 'Patient exports, billing batches, HIPAA risk reports.',
+    files: [
+      { path: '\\Patient Records', dir: true, size: 0, age: 90 },
+      { path: '\\Patient Records\\Patient_Database_Export.csv', size: 4096, age: 20 },
+      { path: '\\Patient Records\\EHR_Backup_2024.xlsx', size: 3072, age: 35 },
+      { path: '\\Billing', dir: true, size: 0, age: 40 },
+      { path: '\\Billing\\Insurance_Claims_Batch.csv', size: 2048, age: 10 },
+      { path: '\\Billing\\Patient_Billing_Records.pdf', size: 5120, age: 25 },
+      { path: '\\Credentials', dir: true, size: 0, age: 70 },
+      { path: '\\Credentials\\emr_admin_login.txt', size: 96, age: 40 },
+      { path: '\\Credentials\\practice_mgmt_api_key.txt', size: 128, age: 50 },
+      { path: '\\Compliance', dir: true, size: 0, age: 110 },
+      { path: '\\Compliance\\HIPAA_Risk_Assessment_Confidential.pdf', size: 9216, age: 80 }
+    ],
+    templates: [
+      { name: 'emr_admin_login.txt', content: 'EMR System: Example Health EHR\nAdmin Username: emr_admin\nAdmin Password: EMR-Admin-EXAMPLE4\nFacility ID: EXAMPLE-CLINIC-118' },
+      { name: 'practice_mgmt_api_key.txt', content: 'API Key: EXAMPLE1234567890abcdefghij\nClinic: Example Family Medicine\nEnvironment: production' }
+    ]
+  },
+  {
+    id: 'education',
+    icon: 'education',
+    label: 'Education',
+    tagline: 'Student records, financial aid data, faculty payroll.',
+    files: [
+      { path: '\\Student Records', dir: true, size: 0, age: 90 },
+      { path: '\\Student Records\\Student_Database_Export.csv', size: 4096, age: 25 },
+      { path: '\\Student Records\\FERPA_Protected_Grades.xlsx', size: 2048, age: 30 },
+      { path: '\\Financial Aid', dir: true, size: 0, age: 60 },
+      { path: '\\Financial Aid\\FAFSA_Applications_Export.csv', size: 1536, age: 40 },
+      { path: '\\HR', dir: true, size: 0, age: 50 },
+      { path: '\\HR\\Faculty_Payroll_2024.xlsx', size: 3584, age: 15 },
+      { path: '\\Credentials', dir: true, size: 0, age: 80 },
+      { path: '\\Credentials\\sis_admin_login.txt', size: 96, age: 50 },
+      { path: '\\Credentials\\lms_api_key.txt', size: 128, age: 60 }
+    ],
+    templates: [
+      { name: 'sis_admin_login.txt', content: 'System: Example Student Information System\nAdmin Username: sis_admin\nAdmin Password: SIS-Admin-EXAMPLE6\nDistrict ID: EXAMPLE-SD-204' },
+      { name: 'lms_api_key.txt', content: 'Platform: Canvas LMS\nAPI Token: EXAMPLE~abcdefghijklmnopqrstuvwxyz1234\nInstitution: Example State University' }
+    ]
+  },
+  {
+    id: 'manufacturing',
+    icon: 'manufacturing',
+    label: 'Manufacturing',
+    tagline: 'Design specs, supplier contracts, plant credentials.',
+    files: [
+      { path: '\\Engineering', dir: true, size: 0, age: 100 },
+      { path: '\\Engineering\\Product_Design_Specs_Confidential.pdf', size: 8192, age: 60 },
+      { path: '\\Supply Chain', dir: true, size: 0, age: 80 },
+      { path: '\\Supply Chain\\Supplier_Contracts_Confidential.docx', size: 4096, age: 45 },
+      { path: '\\Supply Chain\\Vendor_Pricing_2024.xlsx', size: 2560, age: 30 },
+      { path: '\\Financials', dir: true, size: 0, age: 50 },
+      { path: '\\Financials\\Cost_of_Goods_Report.xlsx', size: 3072, age: 20 },
+      { path: '\\Credentials', dir: true, size: 0, age: 90 },
+      { path: '\\Credentials\\scada_admin_login.txt', size: 96, age: 70 },
+      { path: '\\Credentials\\plc_network_credentials.txt', size: 96, age: 75 }
+    ],
+    templates: [
+      { name: 'scada_admin_login.txt', content: 'System: Example Plant SCADA\nAdmin Username: scada_admin\nAdmin Password: SCADA-EXAMPLE-88\nSite: Example Manufacturing Plant 3' },
+      { name: 'plc_network_credentials.txt', content: 'PLC Network Range: 10.20.EXAMPLE.0/24\nEngineering Station Login: plc_eng\nPassword: PLC-Net-EXAMPLE5' }
+    ]
+  },
+  {
+    id: 'defense',
+    icon: 'defense',
+    label: 'Defense Contractor or Military',
+    tagline: 'Contract awards, controlled technical data, facility access.',
+    files: [
+      { path: '\\Contracts', dir: true, size: 0, age: 130 },
+      { path: '\\Contracts\\DoD_Contract_Award_Confidential.pdf', size: 8192, age: 90 },
+      { path: '\\Contracts\\ITAR_Controlled_Document.docx', size: 5120, age: 100 },
+      { path: '\\Technical Data', dir: true, size: 0, age: 140 },
+      { path: '\\Technical Data\\Technical_Data_Package_CUI.pdf', size: 10240, age: 110 },
+      { path: '\\Financials', dir: true, size: 0, age: 40 },
+      { path: '\\Financials\\Government_Invoice_Batch.xlsx', size: 3072, age: 15 },
+      { path: '\\Credentials', dir: true, size: 0, age: 100 },
+      { path: '\\Credentials\\secure_vpn_config.ovpn', size: 1024, age: 60 },
+      { path: '\\Credentials\\facility_clearance_database.txt', size: 128, age: 80 }
+    ],
+    templates: [
+      { name: 'facility_clearance_database.txt', content: 'Facility CAGE Code: EXAMPLE1\nClearance Database Login: fso_admin\nPassword: FSO-EXAMPLE-2024\nNote: Synthetic record - PhantomFS honeytoken' }
+    ]
+  }
+];
+
+/* -------------------------------------------------------------------------
+   Config generation
+   ------------------------------------------------------------------------- */
+function unixTimestamp(ageDays) {
+  const now = Date.now();
+  const jitterHours = Math.floor(Math.random() * 20) - 10;
+  const ms = now - ageDays * 86400000 + jitterHours * 3600000;
+  return Math.floor(ms / 1000);
+}
+
+function randId() {
+  return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+function buildFileListBlock(industry) {
+  const lines = industry.files.map(f => {
+    const isDir = f.dir ? 'true' : 'false';
+    const size = f.dir ? 0 : f.size;
+    const ts = unixTimestamp(f.age);
+    return `${f.path},${isDir},${size},${ts}`;
+  });
+  return lines.join('\n');
+}
+
+function escapeCdata(str) {
+  // CDATA can't contain "]]>" - guard against it defensively.
+  return str.replace(/]]>/g, ']]]]><![CDATA[>');
+}
+
+function buildTemplatesBlock(industry) {
+  const blocks = [];
+  const seenNames = new Set();
+
+  for (const t of industry.templates) {
+    seenNames.add(t.name.toLowerCase());
+    if (t.type === 'pem') {
+      blocks.push(`    <template name="${t.name}" type="pem" pemLabel="${t.pemLabel}" />`);
+    } else {
+      const content = escapeCdata(t.content.replace(/{{RANDID}}/g, randId()));
+      blocks.push(`    <template name="${t.name}"><![CDATA[\n${content}\n]]></template>`);
+    }
+  }
+
+  for (const s of SHARED_TEMPLATES) {
+    if (s.type === 'pem') {
+      blocks.push(`    <template extension="${s.ext}" type="pem" pemLabel="${s.pemLabel}" />`);
+    } else {
+      const content = escapeCdata(s.content.replace(/{{RANDID}}/g, randId()));
+      blocks.push(`    <template extension="${s.ext}"><![CDATA[\n${content}\n]]></template>`);
+    }
+  }
+
+  return blocks.join('\n\n');
+}
+
+function buildSettingsBlock(settings) {
+  return `  <settings>
+    <enableEventLog>${settings.enableEventLog}</enableEventLog>
+    <enableToast>${settings.enableToast}</enableToast>
+    <alertOnOpen>${settings.alertOnOpen}</alertOnOpen>
+    <alertOnRead>${settings.alertOnRead}</alertOnRead>
+    <toastCooldownSeconds>${settings.toastCooldownSeconds}</toastCooldownSeconds>
+    <verbose>${settings.verbose}</verbose>
+    <virtRoot></virtRoot>
+    <sourceRoot></sourceRoot>
+    <syntheticOnly>true</syntheticOnly>
+    <autoCleanupEnabled>${settings.autoCleanupEnabled}</autoCleanupEnabled>
+    <autoCleanupDelaySeconds>${settings.autoCleanupDelaySeconds}</autoCleanupDelaySeconds>
+    <resolveRemoteIPs>${settings.resolveRemoteIPs}</resolveRemoteIPs>
+  </settings>`;
+}
+
+function generateConfig(industry, settings) {
+  const header = `<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PhantomFS.exe.config
+  Profile: ${industry.label}
+  Generated: ${new Date().toISOString()}
+  Place in the same directory as PhantomFS.exe. Edit and restart the
+  provider; no recompile needed. All keys are optional.
+-->
+
+<configuration>
+
+`;
+
+  const fileListBlock = `  <syntheticFileList><![CDATA[
+${buildFileListBlock(industry)}
+]]></syntheticFileList>`;
+
+  const templatesBlock = `  <syntheticTemplates>
+
+${buildTemplatesBlock(industry)}
+
+  </syntheticTemplates>`;
+
+  return `${header}${buildSettingsBlock(settings)}
+
+${fileListBlock}
+
+${templatesBlock}
+
+</configuration>
+`;
+}
+
+/* -------------------------------------------------------------------------
+   UI wiring
+   ------------------------------------------------------------------------- */
+let selectedIndustry = null;
+
+function readSettings() {
+  const get = id => document.getElementById(id);
+  return {
+    enableEventLog: get('enableEventLog').checked,
+    enableToast: get('enableToast').checked,
+    alertOnOpen: get('alertOnOpen').checked,
+    alertOnRead: get('alertOnRead').checked,
+    toastCooldownSeconds: parseInt(get('toastCooldownSeconds').value, 10) || 15,
+    verbose: get('verbose').checked,
+    autoCleanupEnabled: get('autoCleanupEnabled').checked,
+    autoCleanupDelaySeconds: parseInt(get('autoCleanupDelaySeconds').value, 10) || 300,
+    resolveRemoteIPs: get('resolveRemoteIPs').checked
+  };
+}
+
+function renderTree(industry) {
+  const root = document.getElementById('treePreview');
+  root.innerHTML = '';
+  const namedFiles = new Set(industry.templates.map(t => t.name.toLowerCase()));
+
+  industry.files.forEach(f => {
+    const depth = f.path.split('\\').length - 2;
+    const nameParts = f.path.split('\\');
+    const name = nameParts[nameParts.length - 1];
+    const row = document.createElement('div');
+    row.className = 'tree-row' + (f.dir ? ' is-dir' : '');
+    row.style.paddingLeft = `${depth * 18 + 8}px`;
+
+    const glyph = f.dir ? '&#9662;' : '&#8226;';
+    const trap = !f.dir ? '<span class="trap" title="Alerts on open/read">&#9670;</span>' : '';
+    const sizeLabel = f.dir ? '' : `<span class="size">${formatBytes(f.size)}</span>`;
+
+    row.innerHTML = `<span class="glyph">${glyph}</span><span class="fname">${name}</span>${trap}${sizeLabel}`;
+    root.appendChild(row);
+  });
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  return `${(n / 1024).toFixed(1)} KB`;
+}
+
+function renderIndustryGrid() {
+  const grid = document.getElementById('industryGrid');
+  grid.innerHTML = '';
+  INDUSTRIES.forEach((ind, i) => {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'industry-card';
+    card.dataset.id = ind.id;
+    card.innerHTML = `
+      <span class="industry-num">${String(i + 1).padStart(2, '0')}</span>
+      <span class="industry-icon">${svgIcon(ind.icon)}</span>
+      <span class="industry-name">${ind.label}</span>
+      <span class="industry-tagline">${ind.tagline}</span>
+    `;
+    card.addEventListener('click', () => selectIndustry(ind.id));
+    grid.appendChild(card);
+  });
+}
+
+function selectIndustry(id) {
+  selectedIndustry = INDUSTRIES.find(i => i.id === id);
+  document.querySelectorAll('.industry-card').forEach(c => {
+    c.classList.toggle('selected', c.dataset.id === id);
+  });
+  document.getElementById('previewPanel').classList.add('active');
+  document.getElementById('previewIndustryName').textContent = selectedIndustry.label;
+  document.getElementById('previewFileCount').textContent =
+    `${selectedIndustry.files.filter(f => !f.dir).length} bait files`;
+  renderTree(selectedIndustry);
+  document.getElementById('downloadBtn').disabled = false;
+}
+
+function downloadConfig() {
+  if (!selectedIndustry) return;
+  const settings = readSettings();
+  const xml = generateConfig(selectedIndustry, settings);
+  const blob = new Blob([xml], { type: 'application/xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'PhantomFS.exe.config';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  const status = document.getElementById('downloadStatus');
+  status.textContent = `Generated for ${selectedIndustry.label}.`;
+  status.classList.add('show');
+  setTimeout(() => status.classList.remove('show'), 3200);
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  renderIndustryGrid();
+  document.getElementById('downloadBtn').addEventListener('click', downloadConfig);
+
+  const advToggle = document.getElementById('advancedToggle');
+  advToggle.addEventListener('click', () => {
+    const panel = document.getElementById('advancedSettings');
+    const open = panel.classList.toggle('open');
+    advToggle.setAttribute('aria-expanded', open);
+  });
+});
+
+</script>
+</body>
+</html>
