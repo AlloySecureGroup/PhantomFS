@@ -151,6 +151,9 @@ files:
     directory: false
     size: 1642
     timestamp: 1750000000
+  - path: Documents/HelloWorld.exe
+    directory: false
+    size: 3584
 
 templates:
   # -- Real binary example: a small original PNG, gzip-compressed, for
@@ -188,6 +191,45 @@ templates:
       qWn8bFxqMoUL5b6rv0lCuixNHVSAKM6A8U7NRcuo1XOBRDlJhCjWvz8yiPhnI1Wv3ahz/ZJU+mk1
       QwDMwWD/Fr+oi/8AmMictWoGAAA=
 
+  # -- PE Hello World Test
+  # Add-Type -TypeDefinition @'
+  # public class Foo {
+  #    public static void Main(string[] args) {
+  #        System.Console.WriteLine("Hello, World!");
+  #        System.Console.ReadKey();
+  #  }
+  #}
+  # '@ -OutputAssembly HelloWorld.exe
+  # Then Used Encoder to creat the base64 gzip
+
+  - name: HelloWorld.exe
+    type: base64gzip
+    content: |
+      H4sIAAAAAAAEAO1WPWwURxR+ez6QMeCAEhAowhnfGWSheG1iF4BsbINt7OSMLZ9/JGQJ7+2N7SW7
+      O5eZvctdCkRBIqWjilJGSR0pUoiCEkUofSBtmkiUURpalCLkm9m9H/sc4Y6Gt56f9+bNN9+8mXnn
+      +Zv3qYOI0igvXhA9pFgm6OVyF6X7nZ+66cGhx70Prdzj3uVtT7GSFFvSCZjrhKGIWIEzWQ6ZF7Kp
+      hTwLRJHbR4929SUYi9NEOauD5m/cvF3HfUop67B1OCbVGdvuZFGxOrGJuJ+KXYiarSGVirsdNPEp
+      0THz12wbjZE+4K4lkH+lqV02iI7sIxZtwhrUjXRCn23R7YhXI7T3OmJfs4FUG8SGLZV0KeEGjnQw
+      KS0C84QtuS/chOtGgnWkze/qbpob2bidNVMOkI9FH2KuRaYc3O3/MpmRmFXqx666+kG569z5nlT/
+      AXTOY/H8+1ctgxxTq4zYQ/bw0PCFS9qCtVE/R8neISrC7Q/dz0fSC7eU9hhNxaHKruRpPRWfY/b6
+      ytwUWh96TutXfVFIuOhtXD9BdEgr/5wdppPxvg4k4UnRTj3ZM6QraQ/SAJ1DXaQp1PdM/a2xPEJN
+      DX/LfMfotEHT/UVNlL6gEYNVMNpnpy7BJ15pnI7TJXoLM7Stl35Ar5eeUA/YaotNhymL+k16l9J3
+      d0f5a2q58QbvTL07Oi+KZZ9foVnu+2JNSL9o8yqnGSEoUC50r0D5mop4QAuF29yNaN7xQrLdSEhy
+      JEIdj9pL5TDyAm5fE0HJ87nMc1nxXK4oNjiRJ8Il7jtV01OTEU6qUI44JRO1G4YKnu9FteZokxeA
+      QiV8TmvSi3jOC3nd8gGvzYWbgpa4U0Rf7+vtWeK4IT4JRIThzQqS0IqImpbvr9R+Xe/57fqXv3/z
+      55OnvaPU+eMn66unR55+jvOwznR3MLLSzLI601C7EbvjJzqt5IX26ANbTp1ck07phginqy4v6S0t
+      b0vxsbIol21GOqznoT1kI7uX9dY1Iaer3ATZHADndtH3zdiLs8Qm9gZ7JZIyb4ohi55CezHOpi0S
+      v97F/7Fv72HXssvYsN9H+WqCEPrmyHNkqL+tpr6cGkG9Snm6hXqaltCbowW6AX0O9Qz6Wn5JP/u3
+      jtsq40mbpvbRKWNbJQc3aYY83CYOzJA2cbe09JlZyxh1YFUYdyiCn4AWy3fpB5bGyMMuMRLS1h5I
+      943PUOMboQJqwj1OwV73n0JR5Bqc0o51GMoQ7mrTdxVFwrvpM4Rc0Sw6178Bf80hMr4huPuIl0MB
+      dJ3v66+p+ZJs2KpmlKjfcMtB2zIzr8GrRDXDbgsnHSW8Zs06C4ndS9ap8wz3vd6I2d8iRgRGyohD
+      1LbL3Xu8aOZMwkPBM0BUfTBkL52n5dnPj0bHq4HPKlwqvPWxzAV7KMN46Ioifm/GMivLMwMXM0xF
+      Tlh0fBHysUyNq8z4laNdo45SPCj4NQaAUI1lyjK8rNxtHjhqIPBcKZTYjAZcEVx2VGBXLmRY4ITe
+      JlfRautqgGKsATZX5EibUW0HI/1lWOgEWH6+Nlkq+Z5r0q3tlEqZwRghkmUV6Xy5Tz7vxStjpuJu
+      Gbm3luiwSP5RGTx5cVF6FWT9La72iTqcaaC04iD1uWXNOMcr3Ge+rscyjpoLK+JDLjOs7E26+FXB
+      ApuOr3iyKQMyuAebOvXBHdxHBxtB0Ac0WA8qlLaU8FpahcX/i90dftVEXsurkP8AUsePNgAOAAA=
+  
+  
   # -- AWS --
   - name: credentials
     content: |
