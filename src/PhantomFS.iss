@@ -266,20 +266,18 @@ end;
 //      even if the target exe is a console app.
 //   3. ServiceAccount logon type. SYSTEM does not authenticate via a
 //      logon token the way a real user does, so LogonType must be
-//      ServiceAccount rather than InteractiveToken, paired with the
-//      well-known SYSTEM SID (S-1-5-18) as the UserId.
+//      ServiceAccount rather than InteractiveToken. UserId is given as the
+//      literal account name "NT AUTHORITY\SYSTEM" rather than the raw SID
+//      S-1-5-18: this is the form Task Scheduler's own exported SYSTEM-task
+//      XML uses, and SID-form UserId has been observed to fail import in
+//      some environments depending on account lookup availability at
+//      import time, while the literal name is resolved consistently.
 //
 // Encoding note: the declaration below is UTF-8, matching what
-// SaveStringToFile writes for this content. Inno's SaveStringToFile writes
-// the string using the system ANSI codepage, but every character this
-// function ever produces, the literal XML markup plus whatever XmlEscape
-// lets through from the paths, stays within plain ASCII, and ASCII bytes
-// are identical whether read as ANSI or as UTF-8. That equivalence is what
-// makes the declared encoding match the bytes actually on disk, which is
-// what Task Scheduler's XML importer checks. There is no built-in
-// SaveStringToUTF8File in Inno Setup's Pascal Script, so if install paths
-// ever need to contain non-ASCII characters, this would need a real UTF-8
-// writer instead (e.g. shelling out to PowerShell to write the file).
+// SaveStringToFile writes for this content, since every character this
+// function produces (the literal markup, plus whatever XmlEscape lets
+// through from the paths) stays within plain ASCII, and ASCII bytes are
+// identical whether read as ANSI or UTF-8.
 function BuildTaskXml(const ExePath, WorkDir, VirtRoot: String): String;
 var
   AppArgs: String;
@@ -302,8 +300,7 @@ begin
     '  </Triggers>' + #13#10 +
     '  <Principals>' + #13#10 +
     '    <Principal id="Author">' + #13#10 +
-    // S-1-5-18 is the well-known SID for NT AUTHORITY\SYSTEM.
-    '      <UserId>S-1-5-18</UserId>' + #13#10 +
+    '      <UserId>NT AUTHORITY\SYSTEM</UserId>' + #13#10 +
     '      <LogonType>ServiceAccount</LogonType>' + #13#10 +
     '      <RunLevel>HighestAvailable</RunLevel>' + #13#10 +
     '    </Principal>' + #13#10 +
@@ -347,6 +344,10 @@ var
   XmlPath: String;
   TaskXml: String;
   VirtRoot: String;
+  LogPath: String;
+  LogText: AnsiString;
+  ErrDetail: String;
+  CmdLine: String;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -371,20 +372,33 @@ begin
       // is byte-identical to UTF-8, matching the encoding declared in
       // BuildTaskXml above.
       XmlPath := ExpandConstant('{tmp}\PhantomFS-task.xml');
+      LogPath := ExpandConstant('{tmp}\PhantomFS-schtasks.log');
+
       if SaveStringToFile(XmlPath, TaskXml, False) then
       begin
-        // /XML imports the full definition; /F overwrites any existing task.
-        if not Exec('schtasks.exe',
-             '/Create /TN "PhantomFS" /XML "' + XmlPath + '" /F',
-             '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+        // schtasks.exe does not parse "> file 2>&1" redirection itself,
+        // only cmd.exe does, so the call is wrapped in cmd /c to actually
+        // capture stderr/stdout instead of discarding it as before.
+        CmdLine := '/c schtasks.exe /Create /TN "PhantomFS" /XML "'
+          + XmlPath + '" /F > "' + LogPath + '" 2>&1';
+
+        if not Exec(ExpandConstant('{cmd}'), CmdLine, '', SW_HIDE,
+             ewWaitUntilTerminated, ResultCode) then
           ResultCode := -1;
 
         if ResultCode <> 0 then
+        begin
+          ErrDetail := '';
+          if LoadStringFromFile(LogPath, LogText) then
+            ErrDetail := #13#10#13#10 + 'Details:' + #13#10 + String(LogText);
+
           MsgBox(
             'PhantomFS was installed, but the startup task could not be created'
             + ' (schtasks exit code ' + IntToStr(ResultCode) + ').' + #13#10
-            + 'You can create it manually or re-run the installer.',
+            + 'You can create it manually or re-run the installer.'
+            + ErrDetail,
             mbInformation, MB_OK);
+        end;
       end
       else
         MsgBox(
