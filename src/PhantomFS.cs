@@ -44,6 +44,8 @@
 // -- COMPILE --------------------------------------------------------------
 //   csc.exe /platform:x64 /r:System.Xml.dll /out:PhantomFS.exe PhantomFS.cs
 //   (csc.exe lives at C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe)
+//   No extra reference is needed for "type: base64gzip" - GZipStream lives in
+//   System.dll on .NET Framework 4.8, which is already referenced by default.
 //
 // -- RUN (Administrator required) -----------------------------------------------
 //   Synthetic-only (recommended - no real source folder needed):
@@ -59,12 +61,21 @@
 //     <syntheticTemplates> - content returned when files are opened
 //   Edit and restart; no recompile needed.
 //
+//   Optionally, the synthetic file list and content templates can instead be
+//   loaded from a YAML file, leaving <settings> in PhantomFS.exe.config as the
+//   source of truth for everything else:
+//     PhantomFS.exe --virtroot C:\Honeypot --syntheticonly --syntheticyaml C:\Honeypot\synthetic-data.yml
+//   or embed the path once via <settings><syntheticYamlPath> for scheduled
+//   tasks / services that run without CLI arguments. See synthetic-data.yml
+//   for the expected "files:" / "templates:" shape.
+//
 
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -783,35 +794,124 @@ namespace Synthetic
                 }
 
                 string normalizedPath = fields[0].Trim().TrimStart('\\');
+                AddEntry(data, normalizedPath, isDirectory, fileSize, unixTimestamp);
+            }
 
-                SyntheticEntry entry = new SyntheticEntry();
-                entry.RelativePath = normalizedPath;
-                entry.IsDirectory = isDirectory;
-                entry.FileSize = fileSize;
-                entry.UnixTimestamp = unixTimestamp;
+            return data;
+        }
 
-                int lastSeparatorIndex = normalizedPath.LastIndexOf('\\');
-                if (lastSeparatorIndex >= 0)
+        // Shared by both the XML line-format loader (ParseLines) and the YAML
+        // loader (LoadFromYaml) - builds one SyntheticEntry and indexes it by
+        // path and by parent, so both formats produce an identical in-memory
+        // structure regardless of which one was on disk.
+        private static void AddEntry(SyntheticData data, string normalizedPath, bool isDirectory, long fileSize, long unixTimestamp)
+        {
+            SyntheticEntry entry = new SyntheticEntry();
+            entry.RelativePath = normalizedPath;
+            entry.IsDirectory = isDirectory;
+            entry.FileSize = fileSize;
+            entry.UnixTimestamp = unixTimestamp;
+
+            int lastSeparatorIndex = normalizedPath.LastIndexOf('\\');
+            if (lastSeparatorIndex >= 0)
+            {
+                entry.Name = normalizedPath.Substring(lastSeparatorIndex + 1);
+                entry.ParentPath = normalizedPath.Substring(0, lastSeparatorIndex);
+            }
+            else
+            {
+                entry.Name = normalizedPath;
+                entry.ParentPath = string.Empty;
+            }
+
+            data._entriesByPath[normalizedPath] = entry;
+
+            List<SyntheticEntry> siblings;
+            if (!data._entriesByParent.TryGetValue(entry.ParentPath, out siblings))
+            {
+                siblings = new List<SyntheticEntry>();
+                data._entriesByParent[entry.ParentPath] = siblings;
+            }
+
+            siblings.Add(entry);
+        }
+
+        // Loads the virtual file tree from a YAML file instead of the
+        // <syntheticFileList> block in PhantomFS.exe.config.  Expected shape:
+        //
+        //   files:
+        //     - path: AWS
+        //       directory: true
+        //       size: 0
+        //       timestamp: 1743942586
+        //     - path: AWS/credentials
+        //       directory: false
+        //       size: 116
+        //       timestamp: 1741508986
+        //
+        // "path" accepts either / or \ as the separator; it is normalized to \
+        // internally so the rest of the provider (which indexes on \) needs no
+        // changes.  "directory" defaults to false and "size"/"timestamp" default
+        // to 0 when omitted, matching the leniency of the CSV-line parser above.
+        public static SyntheticData LoadFromYaml(string yamlPath)
+        {
+            if (!File.Exists(yamlPath))
+            {
+                Console.Error.WriteLine("[WARN] YAML synthetic data file not found: " + yamlPath);
+                return null;
+            }
+
+            List<Dictionary<string, string>> rows;
+            try
+            {
+                rows = SimpleYamlListParser.ParseSection(yamlPath, "files");
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine("[WARN] Could not parse YAML file list - " + exception.Message);
+                return null;
+            }
+
+            if (rows.Count == 0)
+            {
+                Console.Error.WriteLine("[WARN] No entries found under 'files:' in " + yamlPath);
+                return null;
+            }
+
+            SyntheticData data = new SyntheticData();
+            foreach (Dictionary<string, string> row in rows)
+            {
+                string rawPath;
+                if (!row.TryGetValue("path", out rawPath) || string.IsNullOrEmpty(rawPath.Trim()))
                 {
-                    entry.Name = normalizedPath.Substring(lastSeparatorIndex + 1);
-                    entry.ParentPath = normalizedPath.Substring(0, lastSeparatorIndex);
+                    Console.Error.WriteLine("[WARN] Skipping YAML entry with no 'path'.");
+                    continue;
                 }
-                else
+
+                string normalizedPath = rawPath.Trim().Replace('/', '\\').TrimStart('\\');
+
+                bool isDirectory = false;
+                string directoryText;
+                if (row.TryGetValue("directory", out directoryText))
                 {
-                    entry.Name = normalizedPath;
-                    entry.ParentPath = string.Empty;
+                    bool.TryParse(directoryText.Trim(), out isDirectory);
                 }
 
-                data._entriesByPath[normalizedPath] = entry;
-
-                List<SyntheticEntry> siblings;
-                if (!data._entriesByParent.TryGetValue(entry.ParentPath, out siblings))
+                long fileSize = 0;
+                string sizeText;
+                if (row.TryGetValue("size", out sizeText))
                 {
-                    siblings = new List<SyntheticEntry>();
-                    data._entriesByParent[entry.ParentPath] = siblings;
+                    long.TryParse(sizeText.Trim(), out fileSize);
                 }
 
-                siblings.Add(entry);
+                long unixTimestamp = 0;
+                string timestampText;
+                if (row.TryGetValue("timestamp", out timestampText))
+                {
+                    long.TryParse(timestampText.Trim(), out unixTimestamp);
+                }
+
+                AddEntry(data, normalizedPath, isDirectory, fileSize, unixTimestamp);
             }
 
             return data;
@@ -856,6 +956,62 @@ namespace Synthetic
             public bool IsPem;
             public string PemLabel;
             public string Text;
+
+            // Binary content, embedded as base64 (optionally gzip-compressed) in
+            // either the YAML "content: |" block or the XML <template> CDATA body.
+            // The base64 text itself is stored as-is at load time; decoding (and
+            // gunzipping) happens lazily on first access via GetDecodedBytes, not
+            // at startup, so a config with many large embedded binaries does not
+            // pay the decode cost for files that are never opened.
+            public bool IsBinary;
+            public bool IsGzipCompressed;
+            public string Base64Payload;
+
+            private byte[] _decodedBytes;
+            private readonly object _decodeLock = new object();
+            private bool _warnedSizeMismatch;
+
+            // Decodes (and caches) the binary payload. Convert.FromBase64String
+            // tolerates embedded whitespace/newlines, so the multi-line base64
+            // text produced by a YAML "|" block or an XML CDATA body needs no
+            // pre-processing. Safe to call concurrently - ProjFS can invoke
+            // GetFileData for the same path from more than one thread.
+            public byte[] GetDecodedBytes()
+            {
+                if (_decodedBytes != null)
+                {
+                    return _decodedBytes;
+                }
+
+                lock (_decodeLock)
+                {
+                    if (_decodedBytes == null)
+                    {
+                        byte[] base64Decoded = Convert.FromBase64String(Base64Payload ?? string.Empty);
+                        _decodedBytes = IsGzipCompressed ? GunzipBytes(base64Decoded) : base64Decoded;
+                    }
+                }
+
+                return _decodedBytes;
+            }
+
+            // Warns once (not on every read) when the decoded byte count does not
+            // match the declared synthetic file size - FitToSize will otherwise
+            // silently truncate or newline-pad the content, which corrupts most
+            // binary formats (zip-based .xlsx/.docx, .pdf, images, and so on).
+            public void WarnIfSizeMismatch(long declaredSize, long actualLength)
+            {
+                if (_warnedSizeMismatch || actualLength == declaredSize)
+                {
+                    return;
+                }
+
+                _warnedSizeMismatch = true;
+                Console.Error.WriteLine("[WARN] Binary template decoded to " + actualLength
+                    + " bytes but its synthetic entry declares size=" + declaredSize
+                    + " - set 'size:' (YAML) or the CSV fileSize field (XML) to the exact"
+                    + " decoded length, or the file will be truncated/padded and likely corrupted.");
+            }
         }
 
         private static Dictionary<string, TemplateEntry> _templatesByFileName;
@@ -892,11 +1048,23 @@ namespace Synthetic
                     string typeAttribute = ReadAttribute(templateNode, "type");
                     string pemLabelAttribute = ReadAttribute(templateNode, "pemLabel");
                     bool isPem = string.Equals(typeAttribute, "pem", StringComparison.OrdinalIgnoreCase);
+                    bool isBase64 = string.Equals(typeAttribute, "base64", StringComparison.OrdinalIgnoreCase);
+                    bool isBase64Gzip = string.Equals(typeAttribute, "base64gzip", StringComparison.OrdinalIgnoreCase);
 
                     TemplateEntry template = new TemplateEntry();
                     template.IsPem = isPem;
                     template.PemLabel = isPem && pemLabelAttribute != null ? pemLabelAttribute : "PRIVATE KEY";
-                    template.Text = isPem ? null : (templateNode.InnerText.Trim() + "\n");
+
+                    if (isBase64 || isBase64Gzip)
+                    {
+                        template.IsBinary = true;
+                        template.IsGzipCompressed = isBase64Gzip;
+                        template.Base64Payload = templateNode.InnerText;
+                    }
+                    else
+                    {
+                        template.Text = isPem ? null : (templateNode.InnerText.Trim() + "\n");
+                    }
 
                     if (nameAttribute != null)
                     {
@@ -919,19 +1087,148 @@ namespace Synthetic
             Console.WriteLine("  Loaded " + templateCount + " content templates from config.");
         }
 
+        // Loads content templates from a YAML file instead of the
+        // <syntheticTemplates> block in PhantomFS.exe.config.  Expected shape:
+        //
+        //   templates:
+        //     - name: credentials
+        //       content: |
+        //         [default]
+        //         aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+        //     - extension: .pdf
+        //       content: |
+        //         %PDF-1.4
+        //         ...
+        //     - name: id_rsa
+        //       type: pem
+        //       pemLabel: RSA PRIVATE KEY
+        //     - name: company_logo.png
+        //       type: base64
+        //       content: |
+        //         iVBORw0KGgoAAAANSUhEUgAA...        (plain base64, no compression)
+        //     - name: Board_Deck_Q3.pptx
+        //       type: base64gzip
+        //       content: |
+        //         H4sIAAAAAAAAA+2c...                (base64 of a gzip stream)
+        //
+        // Exactly one of "name" or "extension" should be set per entry, matching
+        // the name=/extension= attribute pair used by the XML <template> element.
+        // "type: pem" and "pemLabel" behave the same as their XML counterparts.
+        //
+        // "type: base64" / "type: base64gzip" embed real binary content (an
+        // actual small PDF, image, xlsx/docx, etc.) instead of synthesized text.
+        // Decoding happens lazily on first read and is cached afterward, so
+        // startup cost stays flat regardless of how many binaries are embedded.
+        // base64gzip additionally gzip-decompresses after the base64 decode,
+        // which keeps large real files reasonably compact inside the YAML.
+        // IMPORTANT: the matching "files:" entry's "size:" must equal the exact
+        // decoded (post-gzip) byte length, or FitToSize will truncate/pad the
+        // content and most binary formats will not open correctly. A mismatch
+        // logs a one-time [WARN] the first time the file is read.
+        public static void LoadFromYaml(string yamlPath)
+        {
+            _templatesByFileName = new Dictionary<string, TemplateEntry>(StringComparer.OrdinalIgnoreCase);
+            _templatesByExtension = new Dictionary<string, TemplateEntry>(StringComparer.OrdinalIgnoreCase);
+
+            if (!File.Exists(yamlPath))
+            {
+                Console.Error.WriteLine("[WARN] YAML templates file not found: " + yamlPath);
+                return;
+            }
+
+            List<Dictionary<string, string>> rows;
+            try
+            {
+                rows = SimpleYamlListParser.ParseSection(yamlPath, "templates");
+            }
+            catch (Exception exception)
+            {
+                Console.Error.WriteLine("[WARN] Could not parse YAML templates - " + exception.Message);
+                return;
+            }
+
+            int templateCount = 0;
+            foreach (Dictionary<string, string> row in rows)
+            {
+                string nameValue;
+                row.TryGetValue("name", out nameValue);
+                string extensionValue;
+                row.TryGetValue("extension", out extensionValue);
+                string typeValue;
+                row.TryGetValue("type", out typeValue);
+                string pemLabelValue;
+                row.TryGetValue("pemLabel", out pemLabelValue);
+                string contentValue;
+                row.TryGetValue("content", out contentValue);
+
+                bool isPem = string.Equals(typeValue, "pem", StringComparison.OrdinalIgnoreCase);
+                bool isBase64 = string.Equals(typeValue, "base64", StringComparison.OrdinalIgnoreCase);
+                bool isBase64Gzip = string.Equals(typeValue, "base64gzip", StringComparison.OrdinalIgnoreCase);
+
+                TemplateEntry template = new TemplateEntry();
+                template.IsPem = isPem;
+                template.PemLabel = isPem && !string.IsNullOrEmpty(pemLabelValue) ? pemLabelValue.Trim() : "PRIVATE KEY";
+
+                if (isBase64 || isBase64Gzip)
+                {
+                    template.IsBinary = true;
+                    template.IsGzipCompressed = isBase64Gzip;
+                    template.Base64Payload = contentValue ?? string.Empty;
+                }
+                else
+                {
+                    template.Text = isPem ? null : ((contentValue ?? string.Empty).Trim() + "\n");
+                }
+
+                if (!string.IsNullOrEmpty(nameValue))
+                {
+                    _templatesByFileName[nameValue.Trim().ToLowerInvariant()] = template;
+                    templateCount++;
+                }
+                else if (!string.IsNullOrEmpty(extensionValue))
+                {
+                    _templatesByExtension[extensionValue.Trim().ToLowerInvariant()] = template;
+                    templateCount++;
+                }
+                else
+                {
+                    Console.Error.WriteLine("[WARN] Skipping YAML template with neither 'name' nor 'extension'.");
+                }
+            }
+
+            Console.WriteLine("  Loaded " + templateCount + " content templates from YAML.");
+        }
+
         public static byte[] Generate(string fileName, long declaredSize)
         {
             string lowerFileName = fileName.ToLowerInvariant();
-            string content = Resolve(lowerFileName, declaredSize);
-            return FitToSize(Encoding.UTF8.GetBytes(content), declaredSize);
+            byte[] rawContent = ResolveBytes(lowerFileName, declaredSize);
+            return FitToSize(rawContent, declaredSize);
         }
 
-        private static string Resolve(string lowerFileName, long declaredSize)
+        // Generates only the requested window of bytes for a synthetic file.
+        // This avoids allocating multi-GB buffers when placeholders advertise
+        // very large sizes and the caller requests a small read range.
+        public static byte[] GenerateSlice(string fileName, long declaredSize, ulong byteOffset, uint length)
+        {
+            if (declaredSize <= 0 || length == 0 || byteOffset >= (ulong)declaredSize)
+            {
+                return new byte[0];
+            }
+
+            long remaining = declaredSize - (long)byteOffset;
+            int requestedLength = (int)Math.Min((long)length, remaining);
+            string lowerFileName = fileName.ToLowerInvariant();
+            byte[] rawContent = ResolveBytes(lowerFileName, declaredSize);
+            return FitToSizeSlice(rawContent, declaredSize, (long)byteOffset, requestedLength);
+        }
+
+        private static byte[] ResolveBytes(string lowerFileName, long declaredSize)
         {
             TemplateEntry template;
             if (_templatesByFileName != null && _templatesByFileName.TryGetValue(lowerFileName, out template))
             {
-                return Produce(template, declaredSize);
+                return ProduceBytes(template, declaredSize);
             }
 
             string extension = Path.GetExtension(lowerFileName);
@@ -939,17 +1236,42 @@ namespace Synthetic
                 && _templatesByExtension != null
                 && _templatesByExtension.TryGetValue(extension, out template))
             {
-                return Produce(template, declaredSize);
+                return ProduceBytes(template, declaredSize);
             }
 
-            return "# " + lowerFileName + "\n# Synthetic honeypot file - add a <template> to PhantomFS.exe.config\n";
+            return Encoding.UTF8.GetBytes(
+                "# " + lowerFileName + "\n# Synthetic honeypot file - add a <template> to PhantomFS.exe.config\n");
         }
 
-        private static string Produce(TemplateEntry template, long declaredSize)
+        private static byte[] ProduceBytes(TemplateEntry template, long declaredSize)
         {
-            return template.IsPem
-                ? BuildPemBlock(template.PemLabel, declaredSize)
-                : (template.Text ?? string.Empty);
+            if (template.IsPem)
+            {
+                return Encoding.UTF8.GetBytes(BuildPemBlock(template.PemLabel, declaredSize));
+            }
+
+            if (template.IsBinary)
+            {
+                byte[] decodedBytes = template.GetDecodedBytes();
+                template.WarnIfSizeMismatch(declaredSize, decodedBytes.Length);
+                return decodedBytes;
+            }
+
+            return Encoding.UTF8.GetBytes(template.Text ?? string.Empty);
+        }
+
+        // Reverses gzip compression on an already base64-decoded byte array.
+        // Used for "type: base64gzip" templates - keeps large real binaries
+        // reasonably compact inside the YAML/XML config.
+        private static byte[] GunzipBytes(byte[] compressedBytes)
+        {
+            using (MemoryStream compressedStream = new MemoryStream(compressedBytes))
+            using (GZipStream gzipStream = new GZipStream(compressedStream, CompressionMode.Decompress))
+            using (MemoryStream resultStream = new MemoryStream())
+            {
+                gzipStream.CopyTo(resultStream);
+                return resultStream.ToArray();
+            }
         }
 
         private static string BuildPemBlock(string label, long targetSize)
@@ -997,6 +1319,13 @@ namespace Synthetic
                 return new byte[0];
             }
 
+            if (targetSize > int.MaxValue)
+            {
+                Console.Error.WriteLine("[WARN] Requested synthetic payload exceeds in-memory limit: size="
+                    + targetSize + " - serving data in read-window mode.");
+                return FitToSizeSlice(rawContent, targetSize, 0, rawContent != null ? rawContent.Length : 0);
+            }
+
             byte[] result = new byte[(int)targetSize];
             if (rawContent.Length >= (int)targetSize)
             {
@@ -1014,6 +1343,39 @@ namespace Synthetic
             return result;
         }
 
+        private static byte[] FitToSizeSlice(byte[] rawContent, long targetSize, long startOffset, int requestedLength)
+        {
+            if (requestedLength <= 0 || targetSize <= 0 || startOffset >= targetSize)
+            {
+                return new byte[0];
+            }
+
+            byte[] result = new byte[requestedLength];
+            byte[] source = rawContent ?? new byte[0];
+
+            long sourceLength = source.LongLength;
+            if (startOffset < sourceLength)
+            {
+                int copyStart = (int)startOffset;
+                int copyLength = (int)Math.Min((long)requestedLength, sourceLength - startOffset);
+                Array.Copy(source, copyStart, result, 0, copyLength);
+
+                for (int paddingIndex = copyLength; paddingIndex < requestedLength; paddingIndex++)
+                {
+                    result[paddingIndex] = (byte)'\n';
+                }
+            }
+            else
+            {
+                for (int paddingIndex = 0; paddingIndex < requestedLength; paddingIndex++)
+                {
+                    result[paddingIndex] = (byte)'\n';
+                }
+            }
+
+            return result;
+        }
+
         private static string ReadAttribute(XmlNode node, string attributeName)
         {
             if (node.Attributes == null)
@@ -1023,6 +1385,232 @@ namespace Synthetic
 
             XmlAttribute attribute = node.Attributes[attributeName];
             return attribute != null ? attribute.Value : null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // SimpleYamlListParser - a deliberately narrow YAML reader.
+    //
+    // This is not a general-purpose YAML parser. It understands exactly one
+    // shape, which is all PhantomFS needs: a top-level "key:" line followed by
+    // a block sequence of flat mappings, where a mapping value can either be a
+    // plain scalar or a literal block scalar introduced with "|" (used for
+    // multi-line template content). That shape covers both the "files:" and
+    // "templates:" sections of a PhantomFS synthetic-data YAML file:
+    //
+    //   files:
+    //     - path: AWS\credentials
+    //       directory: false
+    //       size: 116
+    //       timestamp: 1741508986
+    //
+    //   templates:
+    //     - name: credentials
+    //       content: |
+    //         [default]
+    //         aws_access_key_id = AKIAIOSFODNN7EXAMPLE
+    //
+    // Indentation must use spaces (tabs are rejected). Comments (#) and blank
+    // lines are ignored outside of literal block scalars, where every line is
+    // taken verbatim once the block has started.
+    // -------------------------------------------------------------------------
+    internal static class SimpleYamlListParser
+    {
+        public static List<Dictionary<string, string>> ParseSection(string yamlPath, string sectionKey)
+        {
+            string[] lines = File.ReadAllLines(yamlPath);
+            foreach (string line in lines)
+            {
+                if (line.IndexOf('\t') >= 0)
+                {
+                    throw new FormatException("Tabs are not supported in PhantomFS YAML files - use spaces for indentation.");
+                }
+            }
+
+            List<Dictionary<string, string>> results = new List<Dictionary<string, string>>();
+
+            int lineIndex = FindTopLevelKey(lines, sectionKey);
+            if (lineIndex < 0)
+            {
+                return results;   // section absent - caller decides whether that's fatal
+            }
+
+            int? itemIndent = null;
+            Dictionary<string, string> currentItem = null;
+
+            while (lineIndex < lines.Length)
+            {
+                string rawLine = lines[lineIndex];
+                if (IsBlankOrComment(rawLine))
+                {
+                    lineIndex++;
+                    continue;
+                }
+
+                int indent = IndentOf(rawLine);
+                if (indent == 0)
+                {
+                    break;   // next top-level key, or end of section
+                }
+
+                string content = rawLine.Substring(indent);
+                if (content.StartsWith("- "))
+                {
+                    if (itemIndent == null)
+                    {
+                        itemIndent = indent;
+                    }
+
+                    if (indent != itemIndent.Value)
+                    {
+                        break;   // inconsistent nesting - stop rather than guess
+                    }
+
+                    if (currentItem != null)
+                    {
+                        results.Add(currentItem);
+                    }
+
+                    currentItem = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    string firstFieldText = content.Substring(2);
+                    lineIndex++;
+                    lineIndex = ConsumeKeyValue(lines, lineIndex, firstFieldText, indent + 2, currentItem);
+                }
+                else
+                {
+                    if (currentItem == null || itemIndent == null || indent < itemIndent.Value + 2)
+                    {
+                        break;   // dedent out of the current list item
+                    }
+
+                    lineIndex++;
+                    lineIndex = ConsumeKeyValue(lines, lineIndex, content, itemIndent.Value + 2, currentItem);
+                }
+            }
+
+            if (currentItem != null)
+            {
+                results.Add(currentItem);
+            }
+
+            return results;
+        }
+
+        private static int FindTopLevelKey(string[] lines, string sectionKey)
+        {
+            string wantedKey = sectionKey + ":";
+            for (int lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+            {
+                string line = lines[lineIndex];
+                if (IsBlankOrComment(line) || IndentOf(line) != 0)
+                {
+                    continue;
+                }
+
+                if (string.Equals(line.Trim(), wantedKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    return lineIndex + 1;
+                }
+            }
+
+            return -1;
+        }
+
+        // Parses one "key: value" pair starting at fieldText (the part of the
+        // line after any leading "- "). If the value introduces a literal block
+        // scalar ("|", "|-", or "|+"), consumes the following more-indented
+        // lines as the block body. Returns the line index to resume parsing at.
+        private static int ConsumeKeyValue(string[] lines, int lineIndex, string fieldText, int fieldIndent, Dictionary<string, string> targetMap)
+        {
+            int colonIndex = fieldText.IndexOf(':');
+            if (colonIndex < 0)
+            {
+                return lineIndex;   // malformed line - ignore and move on
+            }
+
+            string key = fieldText.Substring(0, colonIndex).Trim();
+            string value = fieldText.Substring(colonIndex + 1).Trim();
+
+            if (value == "|" || value == "|-" || value == "|+")
+            {
+                StringBuilder blockBuilder = new StringBuilder();
+                int? contentIndent = null;
+
+                while (lineIndex < lines.Length)
+                {
+                    string blockLine = lines[lineIndex];
+
+                    if (blockLine.Trim().Length == 0)
+                    {
+                        if (contentIndent == null)
+                        {
+                            lineIndex++;   // skip leading blank lines before the block starts
+                            continue;
+                        }
+
+                        blockBuilder.Append("\n");
+                        lineIndex++;
+                        continue;
+                    }
+
+                    int blockLineIndent = IndentOf(blockLine);
+                    if (contentIndent == null)
+                    {
+                        if (blockLineIndent <= fieldIndent)
+                        {
+                            break;   // block introduced but empty
+                        }
+
+                        contentIndent = blockLineIndent;
+                    }
+
+                    if (blockLineIndent < contentIndent.Value)
+                    {
+                        break;   // dedent - block has ended
+                    }
+
+                    blockBuilder.Append(blockLine.Substring(contentIndent.Value)).Append("\n");
+                    lineIndex++;
+                }
+
+                targetMap[key] = blockBuilder.ToString();
+                return lineIndex;
+            }
+
+            targetMap[key] = StripQuotes(value);
+            return lineIndex;
+        }
+
+        private static string StripQuotes(string value)
+        {
+            if (value.Length >= 2)
+            {
+                char first = value[0];
+                char last = value[value.Length - 1];
+                if ((first == '"' && last == '"') || (first == '\'' && last == '\''))
+                {
+                    return value.Substring(1, value.Length - 2);
+                }
+            }
+
+            return value;
+        }
+
+        private static bool IsBlankOrComment(string line)
+        {
+            string trimmed = line.TrimStart();
+            return trimmed.Length == 0 || trimmed[0] == '#';
+        }
+
+        private static int IndentOf(string line)
+        {
+            int count = 0;
+            while (count < line.Length && line[count] == ' ')
+            {
+                count++;
+            }
+
+            return count;
         }
     }
 }
@@ -1361,20 +1949,15 @@ internal static class Program
 
         Console.WriteLine("  Config   : " + configPath);
 
-        // Load settings, templates, and file list
+        // Load settings (always from the XML .config - this section is left alone)
         PhantomFSSettings.Load(configPath);
-        SyntheticContent.LoadFromConfig(configPath);
-        SyntheticData syntheticData = SyntheticData.LoadFromConfig(configPath);
-        if (syntheticData != null)
-        {
-            Console.WriteLine("  Entries  : " + syntheticData.EntryCount + " synthetic files/dirs");
-        }
 
         // Parse CLI args - override config-embedded paths if supplied
         string sourceRoot = PhantomFSSettings.ConfigSourceRoot;
         string virtualRoot = PhantomFSSettings.ConfigVirtRoot;
         bool syntheticOnly = PhantomFSSettings.ConfigSyntheticOnly;
         bool forceService = false;
+        string syntheticYamlPath = null;
 
         for (int argIndex = 0; argIndex < args.Length; argIndex++)
         {
@@ -1410,6 +1993,44 @@ internal static class Program
                 virtualRoot = value;
                 argIndex++;
             }
+            else if (flag.Equals("--syntheticyaml", StringComparison.OrdinalIgnoreCase))
+            {
+                // Opt-in override: load the synthetic file list and content
+                // templates from this YAML file instead of the <syntheticFileList>
+                // and <syntheticTemplates> blocks in PhantomFS.exe.config. The
+                // <settings> section of the XML config is still used as-is.
+                syntheticYamlPath = value;
+                argIndex++;
+            }
+        }
+
+        // Optional config-embedded fallback, for parity with virtRoot/sourceRoot -
+        // lets a scheduled task or service pin the YAML path without CLI args.
+        if (syntheticYamlPath == null)
+        {
+            syntheticYamlPath = ReadOptionalSetting(configPath, "syntheticYamlPath");
+        }
+
+        // Load synthetic data + content templates, either from the YAML file
+        // (when supplied) or from the untouched XML <syntheticFileList> /
+        // <syntheticTemplates> blocks. This is the only branch point introduced
+        // by YAML support - everything else behaves exactly as before.
+        SyntheticData syntheticData;
+        if (syntheticYamlPath != null)
+        {
+            Console.WriteLine("  YAML     : " + syntheticYamlPath);
+            SyntheticContent.LoadFromYaml(syntheticYamlPath);
+            syntheticData = SyntheticData.LoadFromYaml(syntheticYamlPath);
+        }
+        else
+        {
+            SyntheticContent.LoadFromConfig(configPath);
+            syntheticData = SyntheticData.LoadFromConfig(configPath);
+        }
+
+        if (syntheticData != null)
+        {
+            Console.WriteLine("  Entries  : " + syntheticData.EntryCount + " synthetic files/dirs");
         }
 
         if (virtualRoot == null)
@@ -1427,7 +2048,8 @@ internal static class Program
 
         if (syntheticOnly && syntheticData == null)
         {
-            Console.Error.WriteLine("[ERROR] --syntheticonly requires <syntheticFileList> in config");
+            Console.Error.WriteLine("[ERROR] --syntheticonly requires synthetic file entries "
+                + "(either <syntheticFileList> in config, or --syntheticyaml)");
             return 1;
         }
 
@@ -1535,21 +2157,57 @@ internal static class Program
         return 0;
     }
 
+    // Reads a single optional top-level <settings> element that PhantomFSSettings
+    // itself does not know about yet. Kept separate (rather than growing
+    // PhantomFSSettings) so the well-known settings block stays exactly as it
+    // was; this is purely additive and silently returns null on any failure.
+    private static string ReadOptionalSetting(string configPath, string elementName)
+    {
+        if (!File.Exists(configPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            XmlDocument configDocument = new XmlDocument();
+            configDocument.Load(configPath);
+            XmlNode node = configDocument.SelectSingleNode("/configuration/settings/" + elementName);
+            if (node == null)
+            {
+                return null;
+            }
+
+            string value = node.InnerText.Trim();
+            return string.IsNullOrEmpty(value) ? null : value;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static void PrintUsage()
     {
         Console.WriteLine();
         Console.WriteLine("  Usage:");
-        Console.WriteLine("    PhantomFS.exe --virtroot <path> [--sourceroot <path>] [--syntheticonly] [--service]");
+        Console.WriteLine("    PhantomFS.exe --virtroot <path> [--sourceroot <path>] [--syntheticonly] [--service] [--syntheticyaml <path>]");
         Console.WriteLine();
         Console.WriteLine("  Options:");
-        Console.WriteLine("    --virtroot   <path>   Directory where virtual files appear.");
-        Console.WriteLine("    --sourceroot <path>   Real files to mirror alongside synthetic ones.");
-        Console.WriteLine("    --syntheticonly       Serve only config-defined synthetic files.");
-        Console.WriteLine("    --service             Run non-interactively (Task Scheduler / service).");
+        Console.WriteLine("    --virtroot     <path>   Directory where virtual files appear.");
+        Console.WriteLine("    --sourceroot   <path>   Real files to mirror alongside synthetic ones.");
+        Console.WriteLine("    --syntheticonly         Serve only config-defined synthetic files.");
+        Console.WriteLine("    --service               Run non-interactively (Task Scheduler / service).");
+        Console.WriteLine("    --syntheticyaml <path>  Load the synthetic file list and content");
+        Console.WriteLine("                            templates from a YAML file instead of the");
+        Console.WriteLine("                            <syntheticFileList> / <syntheticTemplates>");
+        Console.WriteLine("                            blocks in PhantomFS.exe.config.");
         Console.WriteLine();
         Console.WriteLine("  Notes:");
         Console.WriteLine("    * Requires Administrator.");
         Console.WriteLine("    * Paths can also be set in PhantomFS.exe.config <settings>.");
+        Console.WriteLine("    * <settings><syntheticYamlPath> is the config-file equivalent of");
+        Console.WriteLine("      --syntheticyaml, for scheduled tasks that run without CLI args.");
         Console.WriteLine("    * Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart");
     }
 }
@@ -2161,10 +2819,16 @@ internal sealed class PhantomFSProvider
             SyntheticEntry syntheticEntry = _syntheticData.Find(relativePath);
             if (syntheticEntry != null && !syntheticEntry.IsDirectory)
             {
-                int writeResult = WriteFileData(
-                    virtualizationContext, ref dataStreamId,
-                    SyntheticContent.Generate(syntheticEntry.Name, syntheticEntry.FileSize),
-                    byteOffset, length);
+                byte[] slice = SyntheticContent.GenerateSlice(
+                    syntheticEntry.Name,
+                    syntheticEntry.FileSize,
+                    byteOffset,
+                    length);
+                int writeResult = WriteFileDataChunk(
+                    virtualizationContext,
+                    ref dataStreamId,
+                    slice,
+                    byteOffset);
 
                 // Record the materialization time so the cleanup timer can revert
                 // this file back to a virtual placeholder after the configured delay.
@@ -2180,6 +2844,35 @@ internal sealed class PhantomFSProvider
         }
 
         return ProjectedFileSystemNative.HResultFileNotFound;
+    }
+
+    private int WriteFileDataChunk(
+        IntPtr virtualizationContext, ref Guid dataStreamId,
+        byte[] dataChunk, ulong destinationOffset)
+    {
+        uint chunkLength = dataChunk != null ? (uint)dataChunk.Length : 0u;
+        if (chunkLength == 0)
+        {
+            return ProjectedFileSystemNative.HResultOk;
+        }
+
+        IntPtr alignedBuffer = ProjectedFileSystemNative.PrjAllocateAlignedBuffer(
+            virtualizationContext, new UIntPtr(chunkLength));
+        if (alignedBuffer == IntPtr.Zero)
+        {
+            return ProjectedFileSystemNative.HResultFail;
+        }
+
+        try
+        {
+            Marshal.Copy(dataChunk, 0, alignedBuffer, (int)chunkLength);
+            return ProjectedFileSystemNative.PrjWriteFileData(
+                virtualizationContext, ref dataStreamId, alignedBuffer, destinationOffset, chunkLength);
+        }
+        finally
+        {
+            ProjectedFileSystemNative.PrjFreeAlignedBuffer(alignedBuffer);
+        }
     }
 
     private int WriteFileData(
