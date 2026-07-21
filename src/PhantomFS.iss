@@ -268,6 +268,13 @@ end;
 //      logon token the way a real user does, so LogonType must be
 //      ServiceAccount rather than InteractiveToken, paired with the
 //      well-known SYSTEM SID (S-1-5-18) as the UserId.
+//
+// Encoding is declared as UTF-8, not UTF-16, to match what
+// SaveStringToUTF8File actually writes to disk in CurStepChanged below.
+// Inno's plain SaveStringToFile writes the system ANSI codepage while a
+// UTF-16 declaration told Task Scheduler's XML importer to expect a UTF-16
+// BOM, that mismatch is what previously made the import fail with a bare
+// schtasks exit code 1.
 function BuildTaskXml(const ExePath, WorkDir, VirtRoot: String): String;
 var
   AppArgs: String;
@@ -275,7 +282,7 @@ begin
   AppArgs := '--service --syntheticonly --virtroot "' + VirtRoot + '"';
 
   Result :=
-    '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
+    '<?xml version="1.0" encoding="UTF-8"?>' + #13#10 +
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <RegistrationInfo>' + #13#10 +
     '    <Description>PhantomFS virtual honeypot file system provider.</Description>' + #13#10 +
@@ -348,16 +355,18 @@ begin
     ForceDirectories(VirtRoot);
 
     // 2. Startup scheduled task, if the user ticked it. Runs as SYSTEM via
-    // BuildTaskXml, so no installing-user identity is needed here anymore.
+    // BuildTaskXml, so no installing-user identity is needed here.
     if IsTaskSelected('startuptask') then
     begin
       TaskXml := BuildTaskXml(ExePath, WorkDir, VirtRoot);
 
-      // Task Scheduler expects the imported XML as UTF-16. Inno Setup 6 is
-      // Unicode-only, so SaveStringToFile writes UTF-16LE with a BOM, which
-      // matches the encoding="UTF-16" declaration in the XML.
+      // Task Scheduler's XML importer checks the file's actual byte layout
+      // against the declared encoding. BuildTaskXml declares UTF-8, so this
+      // must write real UTF-8 (SaveStringToUTF8File), not the ANSI bytes
+      // that plain SaveStringToFile would produce, or the import silently
+      // fails with schtasks exit code 1.
       XmlPath := ExpandConstant('{tmp}\PhantomFS-task.xml');
-      if SaveStringToFile(XmlPath, TaskXml, False) then
+      if SaveStringToUTF8File(XmlPath, TaskXml, False) then
       begin
         // /XML imports the full definition; /F overwrites any existing task.
         if not Exec('schtasks.exe',
