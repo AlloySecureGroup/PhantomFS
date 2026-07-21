@@ -40,6 +40,7 @@ param(
     [string]$MasterExe     = 'C:\Build\PhantomFS.exe',
     [string]$InstanceRoot  = 'C:\PhantomFS\Instances',
     [string]$VirtRootBase  = 'C:\PhantomFS\Virtual',
+    [string]$SyntheticYamlPath = '',
     [switch]$Stop
 )
 
@@ -297,8 +298,11 @@ function New-PhantomConfigXml {
     param(
         [string]$VirtRoot,
         [string]$FileListXml,
-        [string]$TemplatesXml
+        [string]$TemplatesXml,
+        [string]$SyntheticYamlPath
     )
+
+    $yamlPathElementValue = if ([string]::IsNullOrWhiteSpace($SyntheticYamlPath)) { '' } else { $SyntheticYamlPath }
 
     return @"
 <?xml version="1.0" encoding="utf-8"?>
@@ -313,6 +317,7 @@ function New-PhantomConfigXml {
     <virtRoot>$VirtRoot</virtRoot>
     <sourceRoot></sourceRoot>
     <syntheticOnly>true</syntheticOnly>
+    <syntheticYamlPath>$yamlPathElementValue</syntheticYamlPath>
     <autoCleanupEnabled>true</autoCleanupEnabled>
     <autoCleanupDelaySeconds>300</autoCleanupDelaySeconds>
     <resolveRemoteIPs>true</resolveRemoteIPs>
@@ -339,6 +344,10 @@ function Start-Fleet {
         throw "MasterExe not found: $MasterExe. Build PhantomFS.exe first, or pass -MasterExe."
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($SyntheticYamlPath) -and -not (Test-Path $SyntheticYamlPath)) {
+        throw "SyntheticYamlPath not found: $SyntheticYamlPath"
+    }
+
     if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         throw "This script must run elevated (PhantomFS requires Administrator)."
     }
@@ -354,20 +363,35 @@ function Start-Fleet {
 
         $exeCopyPath    = Join-Path $instanceDir 'PhantomFS.exe'
         $configCopyPath = "$exeCopyPath.config"
+        $instanceYamlPath = ''
 
         Copy-Item -Path $MasterExe -Destination $exeCopyPath -Force
 
+        if (-not [string]::IsNullOrWhiteSpace($SyntheticYamlPath)) {
+            $instanceYamlPath = Join-Path $instanceDir 'synthetic-data.yml'
+            Copy-Item -Path $SyntheticYamlPath -Destination $instanceYamlPath -Force
+        }
+
         $configXml = New-PhantomConfigXml -VirtRoot $industry.VirtRoot `
                                            -FileListXml $industry.FileList `
-                                           -TemplatesXml $industry.Templates
+                                           -TemplatesXml $industry.Templates `
+                                           -SyntheticYamlPath $instanceYamlPath
         Set-Content -Path $configCopyPath -Value $configXml -Encoding UTF8
 
         Write-Host "  [$($industry.Name)] exe : $exeCopyPath"
         Write-Host "  [$($industry.Name)] cfg : $configCopyPath"
         Write-Host "  [$($industry.Name)] root: $($industry.VirtRoot)"
+        if (-not [string]::IsNullOrWhiteSpace($instanceYamlPath)) {
+            Write-Host "  [$($industry.Name)] yaml: $instanceYamlPath"
+        }
+
+        $arguments = @('--virtroot', "`"$($industry.VirtRoot)`"", '--syntheticonly', '--service')
+        if (-not [string]::IsNullOrWhiteSpace($instanceYamlPath)) {
+            $arguments += @('--syntheticyaml', "`"$instanceYamlPath`"")
+        }
 
         $proc = Start-Process -FilePath $exeCopyPath `
-                               -ArgumentList @('--virtroot', "`"$($industry.VirtRoot)`"", '--syntheticonly', '--service') `
+                               -ArgumentList $arguments `
                                -WorkingDirectory $instanceDir `
                                -WindowStyle Hidden `
                                -PassThru
