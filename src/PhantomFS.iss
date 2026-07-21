@@ -258,12 +258,9 @@ end;
 //      that does not exist under a SYSTEM task and exiting immediately.
 function BuildTaskXml(const ExePath, WorkDir, VirtRoot, TaskUserId: String): String;
 var
-  PsArgs: String;
+  AppArgs: String;
 begin
-  // Run via PowerShell with hidden window style so the scheduled task does
-  // not open a visible console window in the user's session.
-  PsArgs := '-NonInteractive -NoProfile -WindowStyle Hidden -Command "& '''
-    + ExePath + ''' --service --syntheticonly --virtroot ''' + VirtRoot + '''"';
+  AppArgs := '--service --syntheticonly --virtroot "' + VirtRoot + '"';
 
   Result :=
     '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
@@ -303,8 +300,8 @@ begin
     '  </Settings>' + #13#10 +
     '  <Actions Context="Author">' + #13#10 +
     '    <Exec>' + #13#10 +
-    '      <Command>powershell.exe</Command>' + #13#10 +
-    '      <Arguments>' + XmlEscape(PsArgs) + '</Arguments>' + #13#10 +
+    '      <Command>' + XmlEscape(ExePath) + '</Command>' + #13#10 +
+    '      <Arguments>' + XmlEscape(AppArgs) + '</Arguments>' + #13#10 +
     '      <WorkingDirectory>' + XmlEscape(WorkDir) + '</WorkingDirectory>' + #13#10 +
     '    </Exec>' + #13#10 +
     '  </Actions>' + #13#10 +
