@@ -269,12 +269,17 @@ end;
 //      ServiceAccount rather than InteractiveToken, paired with the
 //      well-known SYSTEM SID (S-1-5-18) as the UserId.
 //
-// Encoding is declared as UTF-8, not UTF-16, to match what
-// SaveStringToUTF8File actually writes to disk in CurStepChanged below.
-// Inno's plain SaveStringToFile writes the system ANSI codepage while a
-// UTF-16 declaration told Task Scheduler's XML importer to expect a UTF-16
-// BOM, that mismatch is what previously made the import fail with a bare
-// schtasks exit code 1.
+// Encoding note: the declaration below is UTF-8, matching what
+// SaveStringToFile writes for this content. Inno's SaveStringToFile writes
+// the string using the system ANSI codepage, but every character this
+// function ever produces, the literal XML markup, plus whatever XmlEscape
+// lets through from the paths, stays within plain ASCII, and ASCII bytes
+// are identical whether read as ANSI or as UTF-8. That equivalence is what
+; makes the declared encoding match the bytes on disk, which is what Task
+// Scheduler's XML importer checks. There is no built-in SaveStringToUTF8File
+// in Inno Setup's Pascal Script, so if install paths ever need to contain
+// non-ASCII characters, this would need a real UTF-8 writer (e.g. shelling
+// out to PowerShell to write the file) rather than SaveStringToFile.
 function BuildTaskXml(const ExePath, WorkDir, VirtRoot: String): String;
 var
   AppArgs: String;
@@ -360,13 +365,13 @@ begin
     begin
       TaskXml := BuildTaskXml(ExePath, WorkDir, VirtRoot);
 
-      // Task Scheduler's XML importer checks the file's actual byte layout
-      // against the declared encoding. BuildTaskXml declares UTF-8, so this
-      // must write real UTF-8 (SaveStringToUTF8File), not the ANSI bytes
-      // that plain SaveStringToFile would produce, or the import silently
-      // fails with schtasks exit code 1.
+      // SaveStringToFile is the real built-in (there is no
+      // SaveStringToUTF8File in Inno's Pascal Script). It writes the
+      // system ANSI codepage, which for this purely-ASCII XML content
+      // is byte-identical to UTF-8, matching the encoding declared in
+      // BuildTaskXml above.
       XmlPath := ExpandConstant('{tmp}\PhantomFS-task.xml');
-      if SaveStringToUTF8File(XmlPath, TaskXml, False) then
+      if SaveStringToFile(XmlPath, TaskXml, False) then
       begin
         // /XML imports the full definition; /F overwrites any existing task.
         if not Exec('schtasks.exe',
