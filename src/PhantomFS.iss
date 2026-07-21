@@ -234,17 +234,19 @@ end;
 //      non-interactively (blocks until stopped) instead of reading a stdin
 //      that does not exist under a SYSTEM task and exiting immediately.
 //
-// Why SYSTEM, BootTrigger, and an explicit LogonType (not the LogonTrigger
-// / missing-LogonType / SID-only form from an earlier draft):
+// Why SYSTEM + BootTrigger, and no LogonType element:
 //   1. BootTrigger, not LogonTrigger. SYSTEM runs the task at boot without
 //      any user ever logging on, so a machine that reboots to the lock
 //      screen still gets the provider running.
-//   2. LogonType must be explicit. A Principal that names SYSTEM as UserId
-//      but omits LogonType is ambiguous to Task Scheduler and is what
-//      caused earlier XML to fail import or misbehave at runtime.
-//      ServiceAccount is the correct value for SYSTEM/LocalService/
-//      NetworkService, since those accounts do not authenticate via an
-//      interactive logon token the way a real user does.
+//   2. No <LogonType>. An earlier revision added <LogonType>ServiceAccount
+//      here, reasoning that a bare SYSTEM UserId with no LogonType was
+//      ambiguous. That was wrong: schtasks rejected it with "The task XML
+//      contains a value which is incorrectly formatted or out of range"
+//      pointing directly at the LogonType line. For the well-known service
+//      accounts (SYSTEM, LocalService, NetworkService), Task Scheduler
+//      infers the correct logon behavior from the account itself; the
+//      canonical XML form is just UserId + RunLevel, with LogonType
+//      omitted entirely.
 //   3. UserId as the literal "NT AUTHORITY\SYSTEM" rather than the raw SID
 //      S-1-5-18: this is the form Task Scheduler's own exported SYSTEM-task
 //      XML uses, and resolves more consistently than the bare SID across
@@ -285,7 +287,6 @@ begin
     '  <Principals>' + #13#10 +
     '    <Principal id="Author">' + #13#10 +
     '      <UserId>NT AUTHORITY\SYSTEM</UserId>' + #13#10 +
-    '      <LogonType>ServiceAccount</LogonType>' + #13#10 +
     '      <RunLevel>HighestAvailable</RunLevel>' + #13#10 +
     '    </Principal>' + #13#10 +
     '  </Principals>' + #13#10 +
