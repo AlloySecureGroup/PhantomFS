@@ -272,14 +272,14 @@ end;
 // Encoding note: the declaration below is UTF-8, matching what
 // SaveStringToFile writes for this content. Inno's SaveStringToFile writes
 // the string using the system ANSI codepage, but every character this
-// function ever produces, the literal XML markup, plus whatever XmlEscape
+// function ever produces, the literal XML markup plus whatever XmlEscape
 // lets through from the paths, stays within plain ASCII, and ASCII bytes
 // are identical whether read as ANSI or as UTF-8. That equivalence is what
-; makes the declared encoding match the bytes on disk, which is what Task
-// Scheduler's XML importer checks. There is no built-in SaveStringToUTF8File
-// in Inno Setup's Pascal Script, so if install paths ever need to contain
-// non-ASCII characters, this would need a real UTF-8 writer (e.g. shelling
-// out to PowerShell to write the file) rather than SaveStringToFile.
+// makes the declared encoding match the bytes actually on disk, which is
+// what Task Scheduler's XML importer checks. There is no built-in
+// SaveStringToUTF8File in Inno Setup's Pascal Script, so if install paths
+// ever need to contain non-ASCII characters, this would need a real UTF-8
+// writer instead (e.g. shelling out to PowerShell to write the file).
 function BuildTaskXml(const ExePath, WorkDir, VirtRoot: String): String;
 var
   AppArgs: String;
