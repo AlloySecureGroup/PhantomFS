@@ -102,26 +102,15 @@ Name: "{group}\Documentation";               Filename: "{app}\docs\index.md"
 ; per [Run]/[UninstallRun] entry, it does not support continuing a single
 ; entry's Filename/Parameters/Description/Flags across multiple lines the
 ; way earlier revisions of this script assumed.
-Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle Hidden -Command ""$ErrorActionPreference='Stop'; $f=Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS; if($f.State -ne 'Enabled') {{ Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart | Out-Null }}"""; Description: "Enabling Windows ProjFS optional feature"; StatusMsg: "Enabling Windows Projected File System..."; Flags: runhidden waituntilterminated
+Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle Hidden -Command ""$f=(Get-WindowsOptionalFeature -Online -FeatureName Client-ProjFS); if($f.State -ne 'Enabled') {{ Enable-WindowsOptionalFeature -Online -FeatureName Client-ProjFS -NoRestart }}"""; Description: "Enabling Windows ProjFS optional feature"; StatusMsg: "Enabling Windows Projected File System..."; Flags: runhidden waituntilterminated
 
 ; -- Register EventLog source ---------------------------------------------
 Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle Hidden -Command ""if(-not [System.Diagnostics.EventLog]::SourceExists('PhantomFS')) {{ [System.Diagnostics.EventLog]::CreateEventSource('PhantomFS','Application') }}"""; Description: "Registering Windows Event Log source"; StatusMsg: "Registering Event Log source..."; Flags: runhidden waituntilterminated
 
-; NOTE: The default virtual root directory is created from [Code]
-; (CurStepChanged, ssPostInstall) instead of here, because it needs the
-; virtualization path the user chose on the custom wizard page and must
-; exist before the launch entry below runs.
-
-; -- Launch PhantomFS after install (optional) -----------------------------
-; This is the "Launch PhantomFS now" checkbox on the Finished page.
-; postinstall entries run after the user clicks Finish, so the directory
-; created in CurStepChanged already exists by the time this fires.
-; {code:GetVirtRootParam} reads the path from the wizard page at run time,
-; since [Run] Parameters cannot embed a Pascal value directly, but can call
-; into [Code] through the {code:...} constant.
-; No --service here, this launches interactively in the installing user's
-; own session, where a console/desktop exists.
-Filename: "{app}\{#AppExeName}"; Parameters: "--syntheticonly --virtroot ""{code:GetVirtRootParam}"""; Description: "Launch PhantomFS now"; Flags: nowait postinstall skipifsilent unchecked
+; NOTE: The default virtual root is created, and PhantomFS is launched
+; post-install, from [Code] (CurStepChanged) instead of here, because both
+; need the virtualization path the user chose on the custom wizard page,
+; and [Run] parameters cannot read a runtime value from Pascal code.
 
 [UninstallRun]
 ; Stop any running PhantomFS instances gracefully before uninstall.
@@ -173,17 +162,6 @@ begin
   // Strip a single trailing backslash so path joins downstream are clean.
   if (Length(Result) > 0) and (Result[Length(Result)] = '\') then
     Result := Copy(Result, 1, Length(Result) - 1);
-end;
-
-// Wrapper for GetVirtRoot with the single-String-parameter signature that
-// the {code:...} constant requires. Used by the [Run] Parameters field for
-// the "Launch PhantomFS now" checkbox, since [Run] cannot call a Pascal
-// function directly except through this constant form. Param is unused;
-// Inno always passes it, empty here since {code:GetVirtRootParam} has no
-// colon-separated argument.
-function GetVirtRootParam(Param: String): String;
-begin
-  Result := GetVirtRoot();
 end;
 
 // Checks for Windows 10 v1809 (Build 17763) or later.
@@ -256,36 +234,42 @@ end;
 //      non-interactively (blocks until stopped) instead of reading a stdin
 //      that does not exist under a SYSTEM task and exiting immediately.
 //
-// Why SYSTEM instead of the installing user's InteractiveToken:
-//   1. No logon dependency. SYSTEM runs the task at boot without any user
-//      ever logging on, so a machine that reboots to the lock screen still
-//      gets the provider running. This is why the trigger below is a
-//      BootTrigger rather than a LogonTrigger.
-//   2. No visible window. SYSTEM has no interactive desktop session, so
-//      there is nothing for a console window to attach to, this holds
-//      even if the target exe is a console app.
-//   3. ServiceAccount logon type. SYSTEM does not authenticate via a
-//      logon token the way a real user does, so LogonType must be
-//      ServiceAccount rather than InteractiveToken. UserId is given as the
-//      literal account name "NT AUTHORITY\SYSTEM" rather than the raw SID
+// Why SYSTEM, BootTrigger, and an explicit LogonType (not the LogonTrigger
+// / missing-LogonType / SID-only form from an earlier draft):
+//   1. BootTrigger, not LogonTrigger. SYSTEM runs the task at boot without
+//      any user ever logging on, so a machine that reboots to the lock
+//      screen still gets the provider running.
+//   2. LogonType must be explicit. A Principal that names SYSTEM as UserId
+//      but omits LogonType is ambiguous to Task Scheduler and is what
+//      caused earlier XML to fail import or misbehave at runtime.
+//      ServiceAccount is the correct value for SYSTEM/LocalService/
+//      NetworkService, since those accounts do not authenticate via an
+//      interactive logon token the way a real user does.
+//   3. UserId as the literal "NT AUTHORITY\SYSTEM" rather than the raw SID
 //      S-1-5-18: this is the form Task Scheduler's own exported SYSTEM-task
-//      XML uses, and SID-form UserId has been observed to fail import in
-//      some environments depending on account lookup availability at
-//      import time, while the literal name is resolved consistently.
+//      XML uses, and resolves more consistently than the bare SID across
+//      environments.
+//   4. No interactive window: SYSTEM has no interactive desktop session,
+//      so there is nothing for a console window to attach to, regardless
+//      of whether the target exe is a console app.
 //
-// Encoding note: the declaration below is UTF-8, matching what
-// SaveStringToFile writes for this content, since every character this
-// function produces (the literal markup, plus whatever XmlEscape lets
-// through from the paths) stays within plain ASCII, and ASCII bytes are
-// identical whether read as ANSI or UTF-8.
+// Encoding: UTF-16, matching what CurStepChanged actually writes below.
+// TaskXml is a Pascal Script String (Unicode string); SaveStringToFile's
+// String overload in Inno Setup 6 writes that out as UTF-16LE with a BOM,
+// not ANSI and not UTF-8. Declaring anything other than UTF-16 here causes
+// schtasks to fail import with "(1,40)::ERROR: unable to switch the
+// encoding", since the parser detects UTF-16 from the BOM and then hits a
+// contradicting declaration in the text.
 function BuildTaskXml(const ExePath, WorkDir, VirtRoot: String): String;
 var
-  AppArgs: String;
+  Args: String;
 begin
-  AppArgs := '--service --syntheticonly --virtroot "' + VirtRoot + '"';
+  // Arguments are XML text, not a shell string, so no surrounding quotes are
+  // needed except the inner quotes for a path that may contain spaces.
+  Args := '--service --syntheticonly --virtroot "' + VirtRoot + '"';
 
   Result :=
-    '<?xml version="1.0" encoding="UTF-8"?>' + #13#10 +
+    '<?xml version="1.0" encoding="UTF-16"?>' + #13#10 +
     '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">' + #13#10 +
     '  <RegistrationInfo>' + #13#10 +
     '    <Description>PhantomFS virtual honeypot file system provider.</Description>' + #13#10 +
@@ -323,7 +307,7 @@ begin
     '  <Actions Context="Author">' + #13#10 +
     '    <Exec>' + #13#10 +
     '      <Command>' + XmlEscape(ExePath) + '</Command>' + #13#10 +
-    '      <Arguments>' + XmlEscape(AppArgs) + '</Arguments>' + #13#10 +
+    '      <Arguments>' + XmlEscape(Args) + '</Arguments>' + #13#10 +
     '      <WorkingDirectory>' + XmlEscape(WorkDir) + '</WorkingDirectory>' + #13#10 +
     '    </Exec>' + #13#10 +
     '  </Actions>' + #13#10 +
@@ -332,10 +316,9 @@ end;
 
 // Post-install actions that depend on the chosen virtualization path:
 //   1. create the virtual root directory
-//   2. register the startup scheduled task, if selected
-// The interactive "Launch PhantomFS now" step is handled separately by the
-// [Run] postinstall entry via GetVirtRootParam, since it belongs on the
-// Finished page checkbox rather than firing unconditionally here.
+//   2. launch PhantomFS interactively (unless silent)
+//   3. register the startup scheduled task, if selected
+// All three read the same GetVirtRoot() value so they cannot disagree.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -355,30 +338,34 @@ begin
     ExePath  := ExpandConstant('{app}\PhantomFS.exe');
     WorkDir  := ExpandConstant('{app}');
 
-    // 1. Create the virtual root directory. Must happen here (before the
-    // Finished page) so it exists by the time the postinstall launch entry
-    // runs, since that entry fires after CurStep reaches ssDone.
+    // 1. Create the virtual root directory (replaces the former [Run] step).
     ForceDirectories(VirtRoot);
 
-    // 2. Startup scheduled task, if the user ticked it. Runs as SYSTEM via
+    // 2. Interactive post-install launch (replaces the former [Run] entry).
+    // Skipped in silent/very-silent mode, matching the old skipifsilent flag.
+    // No --service: this runs in the installing user's session with a console.
+    if not WizardSilent() then
+      Exec(ExePath,
+           '--syntheticonly --virtroot "' + VirtRoot + '"',
+           WorkDir, SW_SHOWNORMAL, ewNoWait, ResultCode);
+
+    // 3. Startup scheduled task, if the user ticked it. Runs as SYSTEM via
     // BuildTaskXml, so no installing-user identity is needed here.
     if IsTaskSelected('startuptask') then
     begin
       TaskXml := BuildTaskXml(ExePath, WorkDir, VirtRoot);
 
-      // SaveStringToFile is the real built-in (there is no
-      // SaveStringToUTF8File in Inno's Pascal Script). It writes the
-      // system ANSI codepage, which for this purely-ASCII XML content
-      // is byte-identical to UTF-8, matching the encoding declared in
-      // BuildTaskXml above.
+      // TaskXml is a String (Unicode), so this String overload of
+      // SaveStringToFile writes UTF-16LE with a BOM, matching the
+      // encoding="UTF-16" declared inside BuildTaskXml above.
       XmlPath := ExpandConstant('{tmp}\PhantomFS-task.xml');
       LogPath := ExpandConstant('{tmp}\PhantomFS-schtasks.log');
 
       if SaveStringToFile(XmlPath, TaskXml, False) then
       begin
         // schtasks.exe does not parse "> file 2>&1" redirection itself,
-        // only cmd.exe does, so the call is wrapped in cmd /c to actually
-        // capture stderr/stdout instead of discarding it as before.
+        // only cmd.exe does, so the call is wrapped in cmd /c to capture
+        // stderr/stdout for diagnosis instead of discarding it.
         CmdLine := '/c schtasks.exe /Create /TN "PhantomFS" /XML "'
           + XmlPath + '" /F > "' + LogPath + '" 2>&1';
 
