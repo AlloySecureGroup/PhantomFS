@@ -107,10 +107,19 @@ Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle
 ; -- Register EventLog source ---------------------------------------------
 Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle Hidden -Command ""if(-not [System.Diagnostics.EventLog]::SourceExists('PhantomFS')) {{ [System.Diagnostics.EventLog]::CreateEventSource('PhantomFS','Application') }}"""; Description: "Registering Windows Event Log source"; StatusMsg: "Registering Event Log source..."; Flags: runhidden waituntilterminated
 
-; NOTE: The default virtual root is created, and PhantomFS is launched
-; post-install, from [Code] (CurStepChanged) instead of here, because both
-; need the virtualization path the user chose on the custom wizard page,
-; and [Run] parameters cannot read a runtime value from Pascal code.
+; -- Launch PhantomFS after install (optional) ----------------------------
+; Appears as a checkbox on the Finished page; unchecked by default so the
+; user opts in rather than having it fire unconditionally.
+; postinstall entries run after the user clicks Finish, so the virtual root
+; directory created in CurStepChanged already exists by then.
+; {code:GetVirtRootParam} calls into [Code] at run time to read the path
+; the user chose on the Virtualization Path page, since [Run] Parameters
+; cannot embed a Pascal value directly but can call into [Code] via the
+; {code:...} constant form.
+; No --service here: this runs interactively in the installing user's own
+; session, where a console and desktop exist. The scheduled task, if
+; created, uses --service and runs as SYSTEM at boot.
+Filename: "{app}\{#AppExeName}"; Parameters: "--syntheticonly --virtroot ""{code:GetVirtRootParam}"""; Description: "Launch PhantomFS now"; Flags: nowait postinstall skipifsilent unchecked
 
 [UninstallRun]
 ; Stop any running PhantomFS instances gracefully before uninstall.
@@ -126,7 +135,7 @@ Filename: "powershell.exe"; Parameters: "-NonInteractive -NoProfile -WindowStyle
 // -- Inno Setup Pascal code -------------------------------------------------
 
 // Custom wizard page holding the virtualization path input. Declared at
-// module scope so CreateVirtRootPage (which builds it) and GetVirtRoot
+// module scope so InitializeWizard (which builds it) and GetVirtRoot
 // (which reads it) can both reach it.
 var
   VirtRootPage: TInputDirWizardPage;
@@ -162,6 +171,17 @@ begin
   // Strip a single trailing backslash so path joins downstream are clean.
   if (Length(Result) > 0) and (Result[Length(Result)] = '\') then
     Result := Copy(Result, 1, Length(Result) - 1);
+end;
+
+// Wrapper for GetVirtRoot with the single-String-parameter signature that
+// the {code:...} constant requires. Used by the [Run] "Launch PhantomFS
+// now" postinstall entry, since [Run] Parameters cannot call a Pascal
+// function directly, only through this constant form. Param is unused;
+// Inno always passes it, empty here since {code:GetVirtRootParam} has no
+// colon-separated argument.
+function GetVirtRootParam(Param: String): String;
+begin
+  Result := GetVirtRoot();
 end;
 
 // Checks for Windows 10 v1809 (Build 17763) or later.
@@ -317,9 +337,10 @@ end;
 
 // Post-install actions that depend on the chosen virtualization path:
 //   1. create the virtual root directory
-//   2. launch PhantomFS interactively (unless silent)
-//   3. register the startup scheduled task, if selected
-// All three read the same GetVirtRoot() value so they cannot disagree.
+//   2. register the startup scheduled task, if selected
+// The "Launch PhantomFS now" step is handled by the [Run] postinstall entry
+// above via GetVirtRootParam, giving the user an opt-in checkbox on the
+// Finished page rather than launching unconditionally here.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
@@ -339,18 +360,12 @@ begin
     ExePath  := ExpandConstant('{app}\PhantomFS.exe');
     WorkDir  := ExpandConstant('{app}');
 
-    // 1. Create the virtual root directory (replaces the former [Run] step).
+    // 1. Create the virtual root directory. Must happen here (before the
+    // Finished page) so it exists by the time the postinstall launch entry
+    // runs, since that entry fires after the user clicks Finish.
     ForceDirectories(VirtRoot);
 
-    // 2. Interactive post-install launch (replaces the former [Run] entry).
-    // Skipped in silent/very-silent mode, matching the old skipifsilent flag.
-    // No --service: this runs in the installing user's session with a console.
-    if not WizardSilent() then
-      Exec(ExePath,
-           '--syntheticonly --virtroot "' + VirtRoot + '"',
-           WorkDir, SW_SHOWNORMAL, ewNoWait, ResultCode);
-
-    // 3. Startup scheduled task, if the user ticked it. Runs as SYSTEM via
+    // 2. Startup scheduled task, if the user ticked it. Runs as SYSTEM via
     // BuildTaskXml, so no installing-user identity is needed here.
     if IsTaskSelected('startuptask') then
     begin
