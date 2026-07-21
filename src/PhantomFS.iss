@@ -238,25 +238,37 @@ begin
   StringChangeEx(Result, '''', '&apos;', True);
 end;
 
-// Builds the Task Scheduler XML for the startup task.
+// Builds the Task Scheduler XML for the startup task, running as SYSTEM.
 //
-// Why XML instead of the plain "schtasks /Create /SC ONLOGON /TR ..." form
-// the previous revision used:
-//   1. Quoting. The old /TR value nested doubled and backslash-escaped quotes
-//      around the virtroot path, which schtasks does not parse reliably; the
-//      trailing \" before the closing quote escaped the quote and corrupted
-//      the path. A Command/Arguments split in XML removes all nested quoting.
-//   2. Working directory. A scheduled task with no working directory defaults to
-//      C:\Windows\System32, so any relative path resolves there.
-//      WorkingDirectory pins it to the install folder.
-//   3. Restart on failure. At logon the ProjFS filter or the target volume may
-//      not be ready when the task fires, so PrjStartVirtualizing can fail.
-//      RestartOnFailure retries automatically. schtasks command-line flags
-//      cannot express this; the XML form can.
+// Why XML instead of the plain "schtasks /Create /SC ONSTART /TR ..." form
+// an earlier revision used:
+//   1. Quoting. A plain /TR value nesting doubled and backslash-escaped
+//      quotes around the virtroot path is not parsed reliably by schtasks.
+//      A Command/Arguments split in XML removes all nested quoting.
+//   2. Working directory. A scheduled task with no working directory
+//      defaults to C:\Windows\System32, so any relative path resolves
+//      there. WorkingDirectory pins it to the install folder.
+//   3. Restart on failure. At boot the ProjFS filter or the target volume
+//      may not be ready when the task fires, so PrjStartVirtualizing can
+//      fail. RestartOnFailure retries automatically. schtasks command-line
+//      flags cannot express this; the XML form can.
 //   4. --service. The provider is launched with --service so it runs
 //      non-interactively (blocks until stopped) instead of reading a stdin
 //      that does not exist under a SYSTEM task and exiting immediately.
-function BuildTaskXml(const ExePath, WorkDir, VirtRoot, TaskUserId: String): String;
+//
+// Why SYSTEM instead of the installing user's InteractiveToken:
+//   1. No logon dependency. SYSTEM runs the task at boot without any user
+//      ever logging on, so a machine that reboots to the lock screen still
+//      gets the provider running. This is why the trigger below is a
+//      BootTrigger rather than a LogonTrigger.
+//   2. No visible window. SYSTEM has no interactive desktop session, so
+//      there is nothing for a console window to attach to, this holds
+//      even if the target exe is a console app.
+//   3. ServiceAccount logon type. SYSTEM does not authenticate via a
+//      logon token the way a real user does, so LogonType must be
+//      ServiceAccount rather than InteractiveToken, paired with the
+//      well-known SYSTEM SID (S-1-5-18) as the UserId.
+function BuildTaskXml(const ExePath, WorkDir, VirtRoot: String): String;
 var
   AppArgs: String;
 begin
@@ -270,16 +282,17 @@ begin
     '    <URI>\PhantomFS</URI>' + #13#10 +
     '  </RegistrationInfo>' + #13#10 +
     '  <Triggers>' + #13#10 +
-    '    <LogonTrigger>' + #13#10 +
+    '    <BootTrigger>' + #13#10 +
     '      <Enabled>true</Enabled>' + #13#10 +
-    // 30s delay so ProjFS and the volume are ready before we start.
+    // Give ProjFS and the target volume time to come up before start.
     '      <Delay>PT30S</Delay>' + #13#10 +
-    '    </LogonTrigger>' + #13#10 +
+    '    </BootTrigger>' + #13#10 +
     '  </Triggers>' + #13#10 +
     '  <Principals>' + #13#10 +
     '    <Principal id="Author">' + #13#10 +
-    '      <UserId>' + XmlEscape(TaskUserId) + '</UserId>' + #13#10 +
-    '      <LogonType>InteractiveToken</LogonType>' + #13#10 +
+    // S-1-5-18 is the well-known SID for NT AUTHORITY\SYSTEM.
+    '      <UserId>S-1-5-18</UserId>' + #13#10 +
+    '      <LogonType>ServiceAccount</LogonType>' + #13#10 +
     '      <RunLevel>HighestAvailable</RunLevel>' + #13#10 +
     '    </Principal>' + #13#10 +
     '  </Principals>' + #13#10 +
@@ -322,24 +335,23 @@ var
   XmlPath: String;
   TaskXml: String;
   VirtRoot: String;
-  TaskUserId: String;
 begin
   if CurStep = ssPostInstall then
   begin
     VirtRoot := GetVirtRoot();
     ExePath  := ExpandConstant('{app}\PhantomFS.exe');
     WorkDir  := ExpandConstant('{app}');
-    TaskUserId := ExpandConstant('{username}');
 
     // 1. Create the virtual root directory. Must happen here (before the
     // Finished page) so it exists by the time the postinstall launch entry
     // runs, since that entry fires after CurStep reaches ssDone.
     ForceDirectories(VirtRoot);
 
-    // 2. Startup scheduled task, if the user ticked it.
+    // 2. Startup scheduled task, if the user ticked it. Runs as SYSTEM via
+    // BuildTaskXml, so no installing-user identity is needed here anymore.
     if IsTaskSelected('startuptask') then
     begin
-      TaskXml := BuildTaskXml(ExePath, WorkDir, VirtRoot, TaskUserId);
+      TaskXml := BuildTaskXml(ExePath, WorkDir, VirtRoot);
 
       // Task Scheduler expects the imported XML as UTF-16. Inno Setup 6 is
       // Unicode-only, so SaveStringToFile writes UTF-16LE with a BOM, which
