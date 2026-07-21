@@ -292,7 +292,7 @@ begin
     // Long-running provider: no execution time limit, and do not auto-stop it.
     '    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>' + #13#10 +
     '    <Enabled>true</Enabled>' + #13#10 +
-    '    <Hidden>false</Hidden>' + #13#10 +
+    '    <Hidden>true</Hidden>' + #13#10 +
     '    <RestartOnFailure>' + #13#10 +
     '      <Interval>PT1M</Interval>' + #13#10 +
     '      <Count>3</Count>' + #13#10 +
