@@ -66,7 +66,7 @@ Because legitimate users have no reason to open files they didn't put there, eve
 4. Browse to `C:\PhantomFS\Virtual\Documents` in Explorer — you will see the decoy files
 5. Open one — watch the Toast fire and check **Event Viewer → Windows Logs → Application**
 
-### Github Pages Config Generatoe [Config Generator0(https://alloysecuregroup.github.io/PhantomFS/)
+### Github Pages Config Generatoe [Config Generator](https://alloysecuregroup.github.io/PhantomFS/)
 
 
 ---
