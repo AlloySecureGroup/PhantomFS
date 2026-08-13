@@ -169,6 +169,7 @@ jobs:
 
           Write-Host "Installer output:"
           Get-ChildItem "src\Output" | Select-Object Name, Length
+        
 
       - name: Upload artifact - PhantomFS-${{ github.event.inputs.version }}-Setup
         uses: actions/upload-artifact@v5
@@ -231,3 +232,10 @@ jobs:
             --draft=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Sign Windows binary
+        uses: bamboodeploy/sign-action@v1
+        with:
+          api-key: ${{ secrets.BAMBOO_API_KEY }}
+          file:    ./dist/myapp.exe
+          output:  ./dist/myapp-signed.exe
