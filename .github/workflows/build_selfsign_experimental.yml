@@ -117,7 +117,7 @@ jobs:
             Get-ChildItem "${{ github.workspace }}" | Select-Object Name, Length
           }
 
-      - name: Create self-signed code signing certificate (Code Sign Sample)
+      - name: Create self-signed code signing certificate (Alloy Secure Group Development Signed)
         shell: pwsh
         run: |
           # This generates a self-signed certificate for local/internal
@@ -132,8 +132,8 @@ jobs:
 
           $cert = New-SelfSignedCertificate `
             -Type CodeSigningCert `
-            -Subject "CN=Code Sign Sample, O=AlloySecure" `
-            -FriendlyName "Code Sign Sample" `
+            -Subject "CN=Alloy Secure Group Development Signed, O=AlloySecure" `
+            -FriendlyName "Alloy Secure Group Development Signed" `
             -KeyUsage DigitalSignature `
             -KeyAlgorithm RSA `
             -KeyLength 2048 `
@@ -147,7 +147,7 @@ jobs:
           # cert into the local machine trust store for signing; the pfx
           # itself is never uploaded as an artifact.
           $pfxPassword = [System.Guid]::NewGuid().ToString()
-          $pfxPath = Join-Path $certDir "CodeSignSample.pfx"
+          $pfxPath = Join-Path $certDir "AlloySecureGroupDevSigned.pfx"
           $securePassword = ConvertTo-SecureString -String $pfxPassword -Force -AsPlainText
           Export-PfxCertificate -Cert "Cert:\CurrentUser\My\$thumbprint" -FilePath $pfxPath -Password $securePassword | Out-Null
           echo "CODESIGN_PFX_PATH=$pfxPath" >> $env:GITHUB_ENV
@@ -156,13 +156,13 @@ jobs:
           # Export the public certificate as the trusted root artifact
           # that gets shipped alongside the release, so consumers can
           # add it to their own trust store if they choose to.
-          $cerPath = Join-Path $certDir "CodeSignSample.cer"
+          $cerPath = Join-Path $certDir "AlloySecureGroupDevSigned.cer"
           Export-Certificate -Cert "Cert:\CurrentUser\My\$thumbprint" -FilePath $cerPath | Out-Null
           echo "CODESIGN_CER_PATH=$cerPath" >> $env:GITHUB_ENV
 
-          Write-Host "Generated certificate 'Code Sign Sample' (thumbprint $thumbprint)"
+          Write-Host "Generated certificate 'Alloy Secure Group Development Signed' (thumbprint $thumbprint)"
 
-      - name: Trust Code Sign Sample root certificate
+      - name: Trust Alloy Secure Group Development Signed root certificate
         shell: pwsh
         run: |
           # signtool verify checks the chain against the machine trust
@@ -171,9 +171,9 @@ jobs:
           # itself succeeds. Importing here covers both the exe and the
           # installer signing/verify steps later in this job.
           Import-Certificate -FilePath "$env:CODESIGN_CER_PATH" -CertStoreLocation "Cert:\LocalMachine\Root" | Out-Null
-          Write-Host "Imported Code Sign Sample root into LocalMachine\Root"
+          Write-Host "Imported Alloy Secure Group Development Signed root into LocalMachine\Root"
 
-      - name: Sign binaries with Code Sign Sample certificate
+      - name: Sign binaries with Alloy Secure Group Development Signed certificate
         shell: pwsh
         run: |
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" |
@@ -203,10 +203,10 @@ jobs:
           path: bin\x64\
           if-no-files-found: error
 
-      - name: Upload artifact - Code Sign Sample trusted root
+      - name: Upload artifact - Alloy Secure Group Development Signed trusted root
         uses: actions/upload-artifact@v5
         with:
-          name: PhantomFS-${{ github.event.inputs.version }}-CodeSignSample-cer
+          name: PhantomFS-${{ github.event.inputs.version }}-AlloySecureGroupDevSigned-cer
           path: ${{ env.CODESIGN_CER_PATH }}
           if-no-files-found: error
 
@@ -258,7 +258,7 @@ jobs:
           Write-Host "Installer output:"
           Get-ChildItem "src\Output" | Select-Object Name, Length
 
-      - name: Sign installer with Code Sign Sample certificate
+      - name: Sign installer with Alloy Secure Group Development Signed certificate
         shell: pwsh
         run: |
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" |
@@ -311,10 +311,10 @@ jobs:
           name: PhantomFS-${{ github.event.inputs.version }}-Setup
           path: release/setup
 
-      - name: Download Code Sign Sample trusted root
+      - name: Download Alloy Secure Group Development Signed trusted root
         uses: actions/download-artifact@v5
         with:
-          name: PhantomFS-${{ github.event.inputs.version }}-CodeSignSample-cer
+          name: PhantomFS-${{ github.event.inputs.version }}-AlloySecureGroupDevSigned-cer
           path: release/cert
 
       - name: Zip release bundle
