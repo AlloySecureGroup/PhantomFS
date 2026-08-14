@@ -1,7 +1,7 @@
 // PhantomFS.cs
 // ProjFS-based honeypot provider - projects synthetic credential, key, and document
-// files into a virtual directory, then alerts via Windows Event Log and Toast
-// notifications whenever a monitored file is opened or its content is read.
+// files into a virtual directory, then alerts via Windows Event Log
+// whenever a monitored file is opened or its content is read.
 //
 // ----------------------------------------------------------------------------
 // MIT License
@@ -96,10 +96,8 @@ namespace Synthetic
     internal static class PhantomFSSettings
     {
         public static bool EnableEventLog = true;
-        public static bool EnableToast = true;
         public static bool AlertOnOpen = true;   // placeholder created
         public static bool AlertOnRead = true;   // content read
-        public static int ToastCooldownSeconds = 15;
         public static bool Verbose = false;
         public static string ConfigVirtRoot = null;
         public static string ConfigSourceRoot = null;
@@ -126,12 +124,10 @@ namespace Synthetic
                 configDocument.Load(configPath);
 
                 EnableEventLog = ReadBool(configDocument, "/configuration/settings/enableEventLog", true);
-                EnableToast = ReadBool(configDocument, "/configuration/settings/enableToast", true);
                 AlertOnOpen = ReadBool(configDocument, "/configuration/settings/alertOnOpen", true);
                 AlertOnRead = ReadBool(configDocument, "/configuration/settings/alertOnRead", true);
                 Verbose = ReadBool(configDocument, "/configuration/settings/verbose", false);
                 ConfigSyntheticOnly = ReadBool(configDocument, "/configuration/settings/syntheticOnly", false);
-                ToastCooldownSeconds = ReadInt(configDocument, "/configuration/settings/toastCooldownSeconds", 15);
                 ConfigVirtRoot = ReadString(configDocument, "/configuration/settings/virtRoot");
                 ConfigSourceRoot = ReadString(configDocument, "/configuration/settings/sourceRoot");
                 AutoCleanupEnabled = ReadBool(configDocument, "/configuration/settings/autoCleanupEnabled", true);
@@ -182,8 +178,8 @@ namespace Synthetic
     }
 
     // -------------------------------------------------------------------------
-    // AlertManager - writes to Windows Event Log and sends Toast notifications
-    // when honeypot files are accessed.  All public methods are thread-safe.
+    // AlertManager - writes to Windows Event Log (and console) when honeypot
+    // files are accessed.  All public methods are thread-safe.
     // -------------------------------------------------------------------------
     internal static class AlertManager
     {
@@ -194,9 +190,6 @@ namespace Synthetic
         public const int EventIdFilePlaceholder = 1002;
         public const int EventIdStarted = 1003;
         public const int EventIdStopped = 1004;
-
-        private static readonly ConcurrentDictionary<string, DateTime> LastToastTimes =
-            new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
         private static bool _logReady;
 
@@ -229,8 +222,7 @@ namespace Synthetic
             WriteLog(
                 "PhantomFS - Provider Started\r\n"
               + "VirtRoot : " + virtualRoot + "\r\n"
-              + "EventLog : " + PhantomFSSettings.EnableEventLog
-              + "  Toast : " + PhantomFSSettings.EnableToast + "\r\n"
+              + "EventLog : " + PhantomFSSettings.EnableEventLog + "\r\n"
               + "Cleanup  : " + (PhantomFSSettings.AutoCleanupEnabled
                     ? "enabled (" + PhantomFSSettings.AutoCleanupDelaySeconds + "s)"
                     : "disabled"),
@@ -263,11 +255,10 @@ namespace Synthetic
             string remoteTag = isRemote ? "  [REMOTE]" : string.Empty;
             Console.WriteLine("[ALERT:OPEN]  " + filePath + " - " + DescribeProcess(processName, processId) + remoteTag);
             WriteLog(message, EventLogEntryType.Warning, EventIdFilePlaceholder);
-            // Toast deferred to OnFileAccessed - content read is the stronger signal.
         }
 
         // Fires when a process reads content from a honeypot file.
-        // This is the primary alert trigger and sends both log entry and Toast.
+        // This is the primary alert trigger.
         // sessions is non-null when the access originated from an SMB client.
         public static void OnFileAccessed(string filePath, uint processId, string processName,
             List<RemoteSessionHelper.SessionInfo> sessions)
@@ -287,30 +278,6 @@ namespace Synthetic
             string remoteTag = isRemote ? "  [REMOTE]" : string.Empty;
             Console.WriteLine("[ALERT:READ]  " + filePath + " - " + DescribeProcess(processName, processId) + remoteTag);
             WriteLog(message, EventLogEntryType.Warning, EventIdFileRead);
-
-            if (PhantomFSSettings.EnableToast && CooldownExpired(filePath))
-            {
-                string toastTitle = "PhantomFS - Honeypot File Accessed";
-                string toastBody;
-
-                if (isRemote)
-                {
-                    // Include SMB user and source address in the Toast body.
-                    RemoteSessionHelper.SessionInfo firstSession = sessions[0];
-                    toastBody = filePath + "\r\n"
-                              + "User: " + firstSession.UserName
-                              + "  From: " + firstSession.ClientName
-                              + (string.IsNullOrEmpty(firstSession.ClientIP)
-                                    ? string.Empty
-                                    : "  [" + firstSession.ClientIP + "]");
-                }
-                else
-                {
-                    toastBody = filePath + "  (" + DescribeProcess(processName, processId) + ")";
-                }
-
-                SendToast(toastTitle, toastBody);
-            }
         }
 
         // ---- Private helpers ----
@@ -320,20 +287,6 @@ namespace Synthetic
             return string.IsNullOrEmpty(processName)
                 ? "PID " + processId
                 : processName + " (PID " + processId + ")";
-        }
-
-        private static bool CooldownExpired(string cooldownKey)
-        {
-            DateTime now = DateTime.UtcNow;
-            TimeSpan cooldown = TimeSpan.FromSeconds(PhantomFSSettings.ToastCooldownSeconds);
-            DateTime lastToast;
-            if (LastToastTimes.TryGetValue(cooldownKey, out lastToast) && (now - lastToast) < cooldown)
-            {
-                return false;
-            }
-
-            LastToastTimes[cooldownKey] = now;
-            return true;
         }
 
         private static void WriteLog(string message, EventLogEntryType entryType, int eventId)
@@ -351,71 +304,6 @@ namespace Synthetic
             {
                 Console.Error.WriteLine("[WARN] EventLog write failed - " + exception.Message);
             }
-        }
-
-        // Sends a Windows Toast notification by launching a hidden PowerShell process.
-        // Uses the Windows PowerShell AUMID - a standard technique for desktop apps
-        // that have not registered their own AppUserModelId.
-        // The script is Base64-encoded (-EncodedCommand) to avoid quoting pitfalls.
-        private static void SendToast(string title, string body)
-        {
-            string safeTitle = EscapeXml(title);
-            string safeBody = EscapeXml(body);
-
-            // AUMID for Windows PowerShell - works on all Windows 10/11 installs.
-            string applicationUserModelId = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}"
-                                          + "\\WindowsPowerShell\\v1.0\\powershell.exe";
-
-            string toastXml = "<toast>"
-                            + "<visual><binding template=\"ToastGeneric\">"
-                            + "<text>" + safeTitle + "</text>"
-                            + "<text>" + safeBody + "</text>"
-                            + "</binding></visual>"
-                            + "</toast>";
-
-            string script = string.Concat(
-                "[void][Windows.UI.Notifications.ToastNotificationManager,",
-                    " Windows.UI.Notifications, ContentType=WindowsRuntime];",
-                "[void][Windows.Data.Xml.Dom.XmlDocument,",
-                    " Windows.Data.Xml.Dom.XmlDocument, ContentType=WindowsRuntime];",
-                "$x=New-Object Windows.Data.Xml.Dom.XmlDocument;",
-                "$x.LoadXml('", toastXml.Replace("'", "''"), "');",
-                "$t=New-Object Windows.UI.Notifications.ToastNotification $x;",
-                "$n=[Windows.UI.Notifications.ToastNotificationManager]",
-                      "::CreateToastNotifier('", applicationUserModelId.Replace("'", "''"), "');",
-                "$n.Show($t)"
-            );
-
-            try
-            {
-                byte[] scriptBytes = Encoding.Unicode.GetBytes(script);
-                string encodedCommand = Convert.ToBase64String(scriptBytes);
-
-                ProcessStartInfo startInfo = new ProcessStartInfo();
-                startInfo.FileName = "powershell.exe";
-                startInfo.Arguments = "-NonInteractive -NoProfile -WindowStyle Hidden -EncodedCommand " + encodedCommand;
-                startInfo.UseShellExecute = false;
-                startInfo.CreateNoWindow = true;
-                Process.Start(startInfo);
-            }
-            catch (Exception exception)
-            {
-                Console.Error.WriteLine("[WARN] Toast notification failed - " + exception.Message);
-            }
-        }
-
-        private static string EscapeXml(string text)
-        {
-            if (text == null)
-            {
-                return string.Empty;
-            }
-
-            return text.Replace("&", "&amp;")
-                       .Replace("<", "&lt;")
-                       .Replace(">", "&gt;")
-                       .Replace("\"", "&quot;")
-                       .Replace("'", "&apos;");
         }
     }
 
@@ -2102,8 +1990,7 @@ internal static class Program
         }
 
         Console.WriteLine("  Mode     : " + (syntheticOnly ? "synthetic-only" : "mixed"));
-        Console.WriteLine("  EventLog : " + PhantomFSSettings.EnableEventLog
-                        + "   Toast : " + PhantomFSSettings.EnableToast);
+        Console.WriteLine("  EventLog : " + PhantomFSSettings.EnableEventLog);
         Console.WriteLine("  Cleanup  : "
             + (PhantomFSSettings.AutoCleanupEnabled
                 ? "enabled - " + PhantomFSSettings.AutoCleanupDelaySeconds + "s delay"
