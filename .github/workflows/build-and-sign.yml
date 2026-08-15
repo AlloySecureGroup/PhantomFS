@@ -1,0 +1,370 @@
+# .github/workflows/build-and-sign.yml
+# PhantomFS - CI/CD build, signing, and release pipeline
+#
+# Compiles PhantomFS.exe for x64 using the .NET Framework 4.x compiler
+# shipped with Windows, signs the application with Bamboo Deploy, builds
+# the Inno Setup installer containing the signed application, signs the
+# installer, uploads both artifacts, and optionally publishes a GitHub Release.
+#
+# Required repository secret:
+#   BAMBOO_API_KEY
+#
+# Trigger:
+#   Manual only - Actions -> Build and Sign -> Run workflow
+#
+# Inputs:
+#   branch          branch to build from (default: main)
+#   version         e.g. v1.3.0, included in artifact and release names
+#   create_release  publish a GitHub Release after building/signing
+
+name: Build and Sign
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        default: 'main'
+        type: string
+      version:
+        description: 'Version label (e.g. v1.0.0), used in artifact and release names'
+        required: true
+        default: 'v1.0.0'
+        type: string
+      create_release:
+        description: 'Publish a GitHub Release after building'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# -- Build and sign ------------------------------------------------------------
+jobs:
+  build:
+    name: Build and Sign - x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout ${{ inputs.branch }}
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Fetch WinRT metadata (Microsoft.Windows.SDK.Contracts)
+        shell: pwsh
+        run: |
+          # Windows.UI.Notifications.winmd / Windows.Data.Xml.Dom.winmd /
+          # Windows.Foundation.winmd are not reliably present under
+          # C:\Windows\System32\WinMetadata on every Windows runner image,
+          # Server SKUs in particular often lack them. Pull the combined
+          # Windows.winmd from Microsoft.Windows.SDK.Contracts instead.
+          $contractsId      = "microsoft.windows.sdk.contracts"
+          $contractsVersion = "10.0.26100.4188"
+          $nupkgUrl         = "https://api.nuget.org/v3-flatcontainer/$contractsId/$contractsVersion/$contractsId.$contractsVersion.nupkg"
+          $nupkgPath        = Join-Path $env:RUNNER_TEMP "sdk.contracts.zip"
+          $extractPath      = Join-Path $env:RUNNER_TEMP "sdk.contracts"
+
+          Invoke-WebRequest -Uri $nupkgUrl -OutFile $nupkgPath
+          Expand-Archive -Path $nupkgPath -DestinationPath $extractPath -Force
+
+          $windowsWinmd = Join-Path $extractPath "ref\netstandard2.0\Windows.winmd"
+          if (-not (Test-Path $windowsWinmd)) {
+            Write-Error "Windows.winmd not found after extracting Microsoft.Windows.SDK.Contracts $contractsVersion"
+            exit 1
+          }
+
+          "WINDOWS_WINMD=$windowsWinmd" >> $env:GITHUB_ENV
+
+      - name: Compile PhantomFS.exe (x64)
+        shell: pwsh
+        run: |
+          $csc = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          $out = "bin\x64"
+
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+
+          & $csc /platform:x64 `
+            /r:System.Xml.dll `
+            /r:System.ServiceProcess.dll `
+            /r:System.Runtime.WindowsRuntime.dll `
+            /r:"$env:WINDOWS_WINMD" `
+            /out:"$out\PhantomFS.exe" src\PhantomFS.cs
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Compilation failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+          if (-not (Test-Path "$out\PhantomFS.exe")) {
+            Write-Error "Compilation completed but PhantomFS.exe was not found."
+            exit 1
+          }
+
+      - name: Stage config
+        shell: pwsh
+        run: |
+          $config = Get-ChildItem -Path "${{ github.workspace }}\src" `
+                      -Filter "*.exe.config" -File |
+                    Select-Object -First 1 -ExpandProperty FullName
+
+          if ($config) {
+            Copy-Item $config "bin\x64\PhantomFS.exe.config"
+            Write-Host "Staged config: $config"
+          } else {
+            Write-Warning "No .exe.config found in workspace, skipping."
+            Write-Host "Workspace contents:"
+            Get-ChildItem "${{ github.workspace }}" | Select-Object Name, Length
+          }
+
+      # Sign to a temporary file because the Bamboo Deploy action uses
+      # separate input and output paths. The next step replaces the original.
+      - name: Sign PhantomFS.exe
+        uses: bamboodeploy/sign-action@v1
+        with:
+          api-key: ${{ secrets.BAMBOO_API_KEY }}
+          file: ./bin/x64/PhantomFS.exe
+          output: ./bin/x64/PhantomFS-signed.exe
+
+      - name: Replace PhantomFS.exe with signed binary
+        shell: pwsh
+        run: |
+          $signed   = "bin\x64\PhantomFS-signed.exe"
+          $original = "bin\x64\PhantomFS.exe"
+
+          if (-not (Test-Path $signed)) {
+            Write-Error "Bamboo Deploy did not produce $signed."
+            exit 1
+          }
+
+          Move-Item -LiteralPath $signed -Destination $original -Force
+
+          if (-not (Test-Path $original)) {
+            Write-Error "Signed PhantomFS.exe was not staged successfully."
+            exit 1
+          }
+
+      - name: Verify PhantomFS.exe signature
+        shell: pwsh
+        run: |
+          $file = "bin\x64\PhantomFS.exe"
+          $sig  = Get-AuthenticodeSignature $file
+
+          Write-Host "File:              $file"
+          Write-Host "Signature status:  $($sig.Status)"
+          Write-Host "Status message:    $($sig.StatusMessage)"
+
+          if ($sig.SignerCertificate) {
+            Write-Host "Signer subject:    $($sig.SignerCertificate.Subject)"
+            Write-Host "Signer thumbprint: $($sig.SignerCertificate.Thumbprint)"
+          }
+
+          if ($sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            Write-Error "Authenticode verification failed for PhantomFS.exe. Status: $($sig.Status)"
+            exit 1
+          }
+
+      - name: Upload artifact - PhantomFS-${{ inputs.version }}-x64
+        uses: actions/upload-artifact@v5
+        with:
+          name: PhantomFS-${{ inputs.version }}-x64
+          path: bin\x64\
+          if-no-files-found: error
+
+      - name: Locate or install Inno Setup
+        shell: pwsh
+        run: |
+          # Inno Setup was available on some older Windows runner images
+          # but is not guaranteed to be installed on windows-latest.
+          $knownPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+
+          if ($cmd) {
+            $isccPath = $cmd.Source
+          } elseif (Test-Path $knownPath) {
+            $isccPath = $knownPath
+          } else {
+            Write-Host "Inno Setup not found on this runner, installing via Chocolatey..."
+            choco install innosetup -y --no-progress | Out-Null
+            $isccPath = $knownPath
+          }
+
+          if (-not (Test-Path $isccPath)) {
+            Write-Error "ISCC.exe not found after installation attempt."
+            exit 1
+          }
+
+          Write-Host "Using ISCC at: $isccPath"
+          "ISCC_PATH=$isccPath" >> $env:GITHUB_ENV
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          # Remove any stale output so the signing step can unambiguously
+          # identify the installer produced by this run.
+          if (Test-Path "src\Output") {
+            Remove-Item "src\Output" -Recurse -Force
+          }
+
+          $rawVersion  = "${{ inputs.version }}"
+          $innoVersion = $rawVersion.TrimStart('v')
+
+          & "$env:ISCC_PATH" "/DAppVersion=$innoVersion" "src\PhantomFS.iss"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+          Write-Host "Installer output:"
+          Get-ChildItem "src\Output" | Select-Object Name, Length
+
+      - name: Locate installer
+        id: installer
+        shell: pwsh
+        run: |
+          $installers = @(
+            Get-ChildItem -Path "src\Output" -Filter "*.exe" -File
+          )
+
+          if ($installers.Count -eq 0) {
+            Write-Error "No installer .exe found in src\Output."
+            exit 1
+          }
+
+          if ($installers.Count -gt 1) {
+            Write-Host "Installer candidates:"
+            $installers | Select-Object FullName, Length
+            Write-Error "Expected exactly one installer .exe in src\Output."
+            exit 1
+          }
+
+          $installer = $installers[0]
+
+          # Use workspace-relative, forward-slash paths so they work cleanly
+          # when passed into the Bamboo Deploy composite action's Bash step.
+          $inputRelative = [System.IO.Path]::GetRelativePath(
+            "${{ github.workspace }}",
+            $installer.FullName
+          ).Replace('\', '/')
+
+          $signedName = "$($installer.BaseName)-signed$($installer.Extension)"
+          $signedFull = Join-Path $installer.DirectoryName $signedName
+          $outputRelative = [System.IO.Path]::GetRelativePath(
+            "${{ github.workspace }}",
+            $signedFull
+          ).Replace('\', '/')
+
+          "input=./$inputRelative" >> $env:GITHUB_OUTPUT
+          "output=./$outputRelative" >> $env:GITHUB_OUTPUT
+          "original_name=$($installer.Name)" >> $env:GITHUB_OUTPUT
+
+          Write-Host "Installer input:  ./$inputRelative"
+          Write-Host "Signed output:    ./$outputRelative"
+
+      - name: Sign installer
+        uses: bamboodeploy/sign-action@v1
+        with:
+          api-key: ${{ secrets.BAMBOO_API_KEY }}
+          file: ${{ steps.installer.outputs.input }}
+          output: ${{ steps.installer.outputs.output }}
+
+      - name: Replace installer with signed binary
+        shell: pwsh
+        env:
+          INSTALLER_FILE: ${{ steps.installer.outputs.input }}
+          SIGNED_INSTALLER_FILE: ${{ steps.installer.outputs.output }}
+        run: |
+          if (-not (Test-Path $env:SIGNED_INSTALLER_FILE)) {
+            Write-Error "Bamboo Deploy did not produce the signed installer."
+            exit 1
+          }
+
+          Move-Item `
+            -LiteralPath $env:SIGNED_INSTALLER_FILE `
+            -Destination $env:INSTALLER_FILE `
+            -Force
+
+          if (-not (Test-Path $env:INSTALLER_FILE)) {
+            Write-Error "Signed installer was not staged successfully."
+            exit 1
+          }
+
+      - name: Verify installer signature
+        shell: pwsh
+        env:
+          INSTALLER_FILE: ${{ steps.installer.outputs.input }}
+        run: |
+          $sig = Get-AuthenticodeSignature $env:INSTALLER_FILE
+
+          Write-Host "File:              $env:INSTALLER_FILE"
+          Write-Host "Signature status:  $($sig.Status)"
+          Write-Host "Status message:    $($sig.StatusMessage)"
+
+          if ($sig.SignerCertificate) {
+            Write-Host "Signer subject:    $($sig.SignerCertificate.Subject)"
+            Write-Host "Signer thumbprint: $($sig.SignerCertificate.Thumbprint)"
+          }
+
+          if ($sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            Write-Error "Authenticode verification failed for installer. Status: $($sig.Status)"
+            exit 1
+          }
+
+      - name: Upload artifact - PhantomFS-${{ inputs.version }}-Setup
+        uses: actions/upload-artifact@v5
+        with:
+          name: PhantomFS-${{ inputs.version }}-Setup
+          path: src\Output\
+          if-no-files-found: error
+
+# -- Release -------------------------------------------------------------------
+  release:
+    name: GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: ${{ inputs.create_release }}
+
+    steps:
+      - name: Download x64 artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: PhantomFS-${{ inputs.version }}-x64
+          path: release/x64
+
+      - name: Download installer artifact
+        uses: actions/download-artifact@v5
+        with:
+          name: PhantomFS-${{ inputs.version }}-Setup
+          path: release/setup
+
+      - name: Zip release bundle
+        shell: bash
+        run: |
+          cd release
+          zip -r "PhantomFS-${{ inputs.version }}-x64.zip" x64/
+
+      - name: Create draft release and upload assets
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.version }}
+          name: PhantomFS ${{ inputs.version }}
+          target_commitish: ${{ inputs.branch }}
+          generate_release_notes: true
+          draft: true
+          files: |
+            release/PhantomFS-${{ inputs.version }}-x64.zip
+            release/setup/*.exe
+
+      - name: Publish the release
+        shell: bash
+        run: |
+          # With Immutable Releases enabled, assets must be uploaded while the
+          # release is still a draft. This is the final transition to published.
+          gh release edit "${{ inputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
